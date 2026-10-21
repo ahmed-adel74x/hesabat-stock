@@ -17,10 +17,10 @@ def _name(name):
 
 
 def list_products(conn, query=""):
-    """الأصناف النشطة مرتبة بالاسم. query: بحث بالاسم أو برقم الصنف (فاضي = الكل)."""
+    """الأصناف النشطة مرتبة برقم الصنف (من 1). query: بحث بالاسم أو برقم الصنف (فاضي = الكل)."""
     rows = conn.execute("""
         SELECT p.*, COALESCE((SELECT SUM(qty_m) FROM stock_movements m WHERE m.product_id=p.id),0) AS qty_m
-        FROM products p WHERE p.active=1 ORDER BY p.name""").fetchall()
+        FROM products p WHERE p.active=1 ORDER BY p.id""").fetchall()
     if query and query.strip():
         rows = [r for r in rows if matches(query, r["name"], r["id"])]
     return rows

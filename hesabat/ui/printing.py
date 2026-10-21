@@ -25,6 +25,8 @@ def _document(html):
     opt = doc.defaultTextOption()
     opt.setTextDirection(Qt.LayoutDirection.RightToLeft)
     doc.setDefaultTextOption(opt)
+    # الورقة بيضا دايماً: من غيره الكلام بياخد لون الثيم (فاتح في الدارك) فيختفي على الورق
+    doc.setDefaultStyleSheet("body, p, td, th, h1, h2, h3, b, span { color:#000000; }")
     doc.setHtml(html)
     return doc
 
@@ -97,6 +99,11 @@ def _print_html(parent, html, landscape=False, name="document"):
         _open_pdf(doc, landscape, name)
         QMessageBox.information(parent, "طباعة", "نافذة معاينة الطباعة ما اشتغلتش على الجهاز ده، فاتفتح الملف "
                                                  "كـ PDF. اطبعه من برنامج العرض (Ctrl+P).")
+
+
+def print_html(parent, html, landscape=False, name="document"):
+    """طباعة/معاينة أي نص HTML جاهز (كشوف الحساب مثلاً)."""
+    _print_html(parent, html, landscape, name)
 
 
 def print_invoice(parent, conn, invoice_id):

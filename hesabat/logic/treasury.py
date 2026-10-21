@@ -31,6 +31,11 @@ def _parse_date(text, field="التاريخ"):
         raise ValidationError(f"{field}: اكتبه بالشكل 2026-10-08")
 
 
+def parse_date(text, field="التاريخ"):
+    """تاريخ بالشكل 2026-10-08 (بيقبل / والأرقام العربية). بيرمي ValidationError لو غلط."""
+    return _parse_date(text, field)
+
+
 def _past_date(text, field="التاريخ"):
     d = _parse_date(text, field)
     if d > today():

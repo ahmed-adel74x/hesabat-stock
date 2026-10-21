@@ -18,7 +18,8 @@ from ..db import maintenance
 from ..db.connection import tx
 from . import inventory, parties, treasury
 from .errors import ValidationError
-from .money import fmt_money, fmt_qty, mul_qty_price, parse_money, parse_qty
+from .search import matches
+from .money import _AR_DIGITS, fmt_money, fmt_qty, mul_qty_price, parse_money, parse_qty
 
 KINDS = {
     "purchase": {"title": "فاتورة شراء", "party": "supplier", "party_label": "المورد",
@@ -255,11 +256,60 @@ def get_invoice(conn, invoice_id):
     return {"invoice": inv, "items": items}
 
 
-def list_invoices(conn, kind, limit=300):
+def list_invoices(conn, kind, limit=300, number=None, party=None, date_from=None, date_to=None, unpaid_only=False):
+    """الفواتير النشطة من نوع معين، مرتبة من الأحدث. فلاتر اختيارية (كلها بتتجمع مع بعض):
+    number: رقم الفاتورة | party: جزء من اسم العميل/المورد (بحث عربي) | date_from/date_to: من/إلى تاريخ
+    unpaid_only: اللي عليها متبقي بس. التواريخ الغلط بتطلع ValidationError."""
     table = _TABLES[KINDS[kind]["party"]]
-    return conn.execute(f"""SELECT i.*, p.name AS party_name, i.total_c - i.paid_c AS remaining_c
-                            FROM invoices i JOIN {table} p ON p.id=i.party_id WHERE i.kind=? AND i.status='active'
-                            ORDER BY i.invoice_date DESC, i.number DESC LIMIT ?""", (kind, limit)).fetchall()
+    where, args = ["i.kind=?", "i.status='active'"], [kind]
+    num = str(number or "").strip().translate(_AR_DIGITS)
+    if num:
+        if not num.isdigit():
+            raise ValidationError("رقم الفاتورة: اكتب أرقام بس")
+        where.append("i.number=?")
+        args.append(int(num))
+    df = treasury.parse_date(date_from, "من تاريخ") if str(date_from or "").strip() else None
+    dt = treasury.parse_date(date_to, "إلى تاريخ") if str(date_to or "").strip() else None
+    if df and dt and df > dt:
+        raise ValidationError("«من تاريخ» أكبر من «إلى تاريخ»")
+    if df:
+        where.append("i.invoice_date>=?")
+        args.append(df)
+    if dt:
+        where.append("i.invoice_date<=?")
+        args.append(dt)
+    if unpaid_only:
+        where.append("i.total_c > i.paid_c")
+    rows = conn.execute(f"""SELECT i.*, p.name AS party_name, i.total_c - i.paid_c AS remaining_c
+                            FROM invoices i JOIN {table} p ON p.id=i.party_id WHERE {' AND '.join(where)}
+                            ORDER BY i.invoice_date DESC, i.number DESC""", args).fetchall()
+    if str(party or "").strip():
+        rows = [r for r in rows if matches(party, r["party_name"])]
+    return rows[:limit]
+
+
+def _owed_html(conn, h):
+    """سطر «إجمالي المتبقي على الطرف» تحت الفاتورة: رصيده الكلي دلوقتي (شامل الفاتورة دي وكل اللي قبلها).
+    مبيظهرش للعميل النقدي لأنه بيدفع كامل ومفيش عليه رصيد."""
+    party = parties.get(conn, h["party_type"], h["party_id"]) if _party_active(conn, h) else None
+    if party is None or (h["party_type"] == "customer" and party["is_default"]):
+        return ""
+    bal = parties.balance(conn, h["party_type"], h["party_id"])
+    cust = h["party_type"] == "customer"
+    if bal > 0:
+        label, amount = ("إجمالي المتبقي على العميل" if cust else "إجمالي المتبقي للمورد علينا"), bal
+    elif bal < 0:
+        label, amount = ("رصيد دائن للعميل - له عندنا" if cust else "رصيد للمورد عليه - دفعنا له زيادة"), -bal
+    else:
+        return ("<table dir='rtl' width='100%' border='1' cellspacing='0' cellpadding='8'><tr bgcolor='#f3f4f6'>"
+                "<td align='center'><b>إجمالي المتبقي: 0 - الحساب مسدّد بالكامل</b></td></tr></table>")
+    return ("<table dir='rtl' width='100%' border='1' cellspacing='0' cellpadding='8'><tr bgcolor='#f3f4f6'>"
+            f"<td><b>{label}</b><br><span style='font-size:9pt'>شامل الفاتورة دي وكل الفواتير السابقة</span></td>"
+            f"<td align='center'><b style='font-size:14pt'>{fmt_money(amount)}</b></td></tr></table>")
+
+
+def _party_active(conn, h):
+    return conn.execute(f"SELECT 1 FROM {_TABLES[h['party_type']]} WHERE id=? AND active=1", (h["party_id"],)).fetchone()
 
 
 def invoice_html(conn, invoice_id, shop_name=""):
@@ -275,6 +325,7 @@ def invoice_html(conn, invoice_id, shop_name=""):
     cancelled = " (ملغية)" if h["status"] == "cancelled" else ""
     note = f"<p>ملاحظة: {esc(h['note'])}</p>" if h["note"] else ""
     shop = f"<h2 align='center'>{esc(shop_name)}</h2>" if shop_name else ""
+    owed = _owed_html(conn, h)
     return f"""<html dir="rtl"><body dir="rtl" style="font-size:12pt">
 {shop}<h2 align="center">{k['title']} رقم {h['number']}{cancelled}</h2>
 <p>التاريخ: {h['invoice_date']}<br>{k['party_label']}: {esc(party)}<br>المخزن: {esc(wh)}</p>
@@ -282,4 +333,4 @@ def invoice_html(conn, invoice_id, shop_name=""):
 <tr bgcolor="#eeeeee"><th>الصنف</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr>{rows}</table>
 <p>الإجمالي الفرعي: {fmt_money(h['subtotal_c'])}<br>الخصم: {fmt_money(h['discount_c'])}<br>
 <b>الإجمالي: {fmt_money(h['total_c'])}</b><br>{k['cash_label']}: {fmt_money(h['paid_c'])}<br>
-المتبقي: {fmt_money(h['total_c'] - h['paid_c'])}</p>{note}</body></html>"""
+المتبقي: {fmt_money(h['total_c'] - h['paid_c'])}</p>{owed}{note}</body></html>"""

@@ -64,6 +64,12 @@ class FakeItem(Dummy):
     def column(self): return self._c
 
 
+class FakeCheck(Dummy):
+    def __init__(self, *a, **k): self._on = False
+    def isChecked(self): return self._on
+    def setChecked(self, v): self._on = bool(v)
+
+
 class FakeLabel(Dummy):
     def __init__(self, text="", *a, **k): self._t = str(text)
     def text(self): return self._t
@@ -118,7 +124,7 @@ sys.modules["PySide6.QtGui"] = make_mod("PySide6.QtGui", {})
 sys.modules["PySide6.QtPrintSupport"] = make_mod("PySide6.QtPrintSupport", {})
 sys.modules["PySide6.QtWidgets"] = make_mod("PySide6.QtWidgets", {
     "QLineEdit": FakeEdit, "QComboBox": FakeCombo, "QTableWidget": FakeTable,
-    "QTableWidgetItem": FakeItem, "QMessageBox": FakeBox, "QLabel": FakeLabel, "QFileDialog": FakeFileDialog})
+    "QTableWidgetItem": FakeItem, "QMessageBox": FakeBox, "QLabel": FakeLabel, "QCheckBox": FakeCheck, "QFileDialog": FakeFileDialog})
 
 from helpers import tmp_db, make_legacy
 from hesabat.db.connection import connect
@@ -178,7 +184,7 @@ class UiFlow(unittest.TestCase):
             e.setText(v)
         pt.add()
         self.assertEqual(pt.table.rowCount(), 5)
-        pt.table._sel = 0; pt.on_select()
+        pt.table._sel = 4; pt.on_select()                    # الصف الأخير = «لبن» (الترتيب بالرقم)
         pt.f[2].setText("11"); pt.edit()
         pt.add()                                            # مكرر => تنبيه مش خطأ
         self.assertIn("موجود بالفعل", FakeBox.warnings[-1])
@@ -371,6 +377,89 @@ class UiFlow(unittest.TestCase):
         ReportsTab(c).refresh()
 
 
+class NewFeaturesUi(unittest.TestCase):
+    """بحث العملاء، فلتر الفواتير، تعديل/مسح من كشف الحساب، الطباعة الجديدة، الدخول والإعدادات."""
+
+    def setUp(self):
+        FakeBox.warnings.clear()
+        path = tmp_db(); self.conn = connect(path); init_db(self.conn, path)
+
+    def test_flow(self):
+        c = self.conn
+        from hesabat.ui import parties_tab as pt_mod
+        from hesabat.ui.parties_tab import StatementDialog
+        from hesabat.ui.login import LoginDialog
+        from hesabat.ui.settings_tab import SettingsTab
+        from hesabat.ui import invoices_tab as inv_mod
+        from hesabat.logic import auth
+        pid = c.execute("INSERT INTO products(name,sell_price_c,buy_price_c,avg_cost_c,created_at) VALUES('سكر',1500,1000,1000,'x')").lastrowid
+        inventory.add_movement(c, pid, 1, "opening", 100000, 0, 1000, None, None, "", "2026-01-01 00:00:00")
+        ali = parties.create(c, "customer", "علي محمد"); parties.create(c, "customer", "عمر")
+        # بحث العملاء
+        pa = PartiesTab(c, "customer")
+        self.assertEqual(pa.table.rowCount(), 3)
+        pa.search.setText("علي"); pa.refresh(); self.assertEqual(pa.table.rowCount(), 1)
+        pa.search.setText("zzz"); pa.refresh(); self.assertEqual(pa.table.rowCount(), 0)
+        pa.search.setText(""); pa.refresh(); self.assertEqual(pa.table.rowCount(), 3)
+        # فلتر الفواتير
+        i1 = invoices.create_invoice(c, "sale", ali, 1, [(pid, "2", "15")], "0", "10", "", "2026-09-01")
+        i2 = invoices.create_invoice(c, "sale", ali, 1, [(pid, "1", "15")], "0", "15", "", "2026-10-01")
+        lp = InvoicesTab(c, "sale").listing; lp.refresh()
+        self.assertEqual(lp.table.rowCount(), 2)
+        lp.f_number.setText("1"); lp.refresh(); self.assertEqual(lp.table.rowCount(), 1)
+        lp.clear_filter(); self.assertEqual(lp.table.rowCount(), 2)
+        lp.f_unpaid.setChecked(True); lp.refresh(); self.assertEqual(lp.table.rowCount(), 1)
+        lp.clear_filter()
+        lp.f_from.setText("غلط"); lp.refresh(); self.assertIn("من تاريخ", FakeBox.warnings[-1])
+        lp.clear_filter()
+        # كشف الحساب: طباعة + مسح من جوه الفاتورة
+        printed, changes = [], []
+        pt_mod.print_html = lambda parent, html, landscape=False, name="": printed.append(name)
+        sd = StatementDialog(None, c, parties.statement(c, "customer", ali), "customer",
+                             lambda iid, deleted: changes.append((iid, deleted)))
+        sd.print_all(); sd.print_dues()
+        self.assertEqual(printed, ["statement", "dues"])
+        class FakeView:
+            action = "deleted"
+            def __init__(self, *a, **k): invoices.delete_invoice(c, i1)
+            def exec(self): pass
+        orig = pt_mod.InvoiceViewDialog
+        pt_mod.InvoiceViewDialog = FakeView
+        sd.open_invoice(1)
+        self.assertEqual(changes, [(i1, True)])
+        self.assertNotIn(i1, sd.invoice_ids)                                    # الكشف اتحدّث
+        FakeView.action = "edit"
+        FakeView.__init__ = lambda self, *a, **k: None
+        sd.open_invoice(1)
+        self.assertEqual(changes[-1], (i2, False))
+        pt_mod.InvoiceViewDialog = orig
+        # نافذة الفاتورة: مسح وتعديل
+        v = inv_mod.InvoiceViewDialog(None, c, i2, allow_change=True)
+        v.edit(); self.assertEqual(v.action, "edit")
+        v.action = None; v.delete(); self.assertEqual(v.action, "deleted")
+        self.assertEqual(c.execute("SELECT COUNT(*) FROM invoices").fetchone()[0], 0)
+        # الدخول
+        d = LoginDialog(c); d.user.setText("marko"); d.password.setText("12345"); d.login()
+        d2 = LoginDialog(c); d2.user.setText("marko"); d2.password.setText("bad"); d2.login()
+        self.assertEqual(d2.tries, 1)
+        # الإعدادات
+        out = []
+        st = SettingsTab(c, lambda: out.append(1))
+        self.assertEqual(st.name.text(), "marko")
+        st.old.setText("12345"); st.new.setText("secret"); st.confirm_pw.setText("secret"); st.save_password()
+        self.assertTrue(auth.verify(c, "marko", "secret"))
+        st.new.setText("a"); st.confirm_pw.setText("a"); st.old.setText("secret"); st.save_password()
+        self.assertTrue(FakeBox.warnings)                                        # كلمة قصيرة = تنبيه
+        st.logout(); self.assertEqual(out, [1])
+        st.toggle_theme()
+        w = MainWindow(c)
+        i3 = invoices.create_invoice(c, "sale", ali, 1, [(pid, "1", "15")], "0", "0", "", "2026-10-02")
+        w.edit_invoice(i3)
+        self.assertEqual(w.invoice_tabs["sale"].editor.edit_id, i3)           # اتفتحت للتعديل في تبويب المبيعات
+        invoices.delete_invoice(c, i3); w.invoice_deleted(i3)
+        self.assertIsNone(w.invoice_tabs["sale"].editor.edit_id)             # والمحرر اتفرّغ بعد المسح
+
+
 class SelfTest(unittest.TestCase):
     """الاختبار الذاتي اللي بيشتغل على الـ exe: هنا بنتأكد إن منطقه نفسه شغال وإنه بيفشل لما حاجة تفشل."""
 
@@ -390,7 +479,7 @@ class SelfTest(unittest.TestCase):
         code, text = self.run_it()
         self.assertEqual(code, 0, text)
         self.assertIn("SELFTEST OK", text)
-        self.assertIn("الشاشات: 11", text)
+        self.assertIn("الشاشات: 12", text)
         self.assertIn("التقارير: 9", text)
 
     def test_fails_when_something_breaks(self):

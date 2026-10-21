@@ -10,6 +10,8 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from .db.connection import connect, default_db_path
 from .db.migrations import MigrationError, init_db
 from .ui.common import report_error, show_text
+from .logic import auth
+from .ui.login import LoginDialog
 from .ui.main_window import MainWindow
 from .ui.theme import apply_theme
 
@@ -63,11 +65,19 @@ def run(argv=None):
         return 1
     from .logic import preferences
     apply_theme(app, preferences.get_theme(conn))
-    win = MainWindow(conn)
-    win.show()
-    if report:
-        print(report["text"])
-        show_text(win, "تقرير ترحيل البيانات", report["text"])
-    code = app.exec()
+    auth.ensure_admin(conn)
+    code, first = 0, True
+    while True:                                   # تسجيل الدخول → البرنامج → (تسجيل خروج) → تسجيل الدخول من جديد
+        if not LoginDialog(conn).exec():
+            break
+        win = MainWindow(conn)
+        win.show()
+        if report and first:
+            print(report["text"])
+            show_text(win, "تقرير ترحيل البيانات", report["text"])
+        first = False
+        code = app.exec()
+        if not win.logout_requested:
+            break
     conn.close()
     return code

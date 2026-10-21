@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import (QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
                                QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
 
 from ..logic import invoices, parties, products, treasury, warehouses
@@ -11,12 +11,17 @@ from .search_combo import SearchCombo
 
 
 
+DELETE_WARNING = ("حذف الفاتورة نهائياً؟\nهيتعكس أثرها على المخزون وحساب الطرف والخزينة، وهتختفي من كل "
+                  "الشاشات والتقارير وكشوف الحساب، ومش هتقدر ترجعها.")
+
+
 class InvoiceViewDialog(QDialog):
     """عرض فاتورة كاملة بتفاصيلها (للقراءة بس)، مع زر طباعة."""
 
-    def __init__(self, parent, conn, invoice_id):
+    def __init__(self, parent, conn, invoice_id, allow_change=False):
         super().__init__(parent)
         self.conn, self.invoice_id = conn, invoice_id
+        self.action = None            # "edit" أو "deleted" لو المستخدم عدّل/مسح من هنا (الشاشة اللي فتحتها بتتصرف)
         self.setWindowTitle("تفاصيل الفاتورة")
         self.resize(640, 560)
         v = QVBoxLayout(self)
@@ -28,6 +33,9 @@ class InvoiceViewDialog(QDialog):
         v.addWidget(view, 1)
         row = QHBoxLayout()
         row.addWidget(button("طباعة", "success", self.print))
+        if allow_change:
+            row.addWidget(button("تعديل الفاتورة", "primary", self.edit))
+            row.addWidget(button("مسح الفاتورة", "danger", self.delete))
         row.addStretch(1)
         row.addWidget(button("إغلاق", "primary", self.accept))
         v.addLayout(row)
@@ -35,6 +43,19 @@ class InvoiceViewDialog(QDialog):
     @guard
     def print(self):
         print_invoice(self, self.conn, self.invoice_id)
+
+    @guard
+    def edit(self):
+        self.action = "edit"
+        self.accept()
+
+    @guard
+    def delete(self):
+        if confirm(self, DELETE_WARNING):
+            invoices.delete_invoice(self.conn, self.invoice_id)
+            self.action = "deleted"
+            QMessageBox.information(self, "تم", "تم مسح الفاتورة ✔")
+            self.accept()
 
 
 class InvoicePage(QWidget):
@@ -266,6 +287,31 @@ class InvoicesListPage(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(18, 14, 18, 14)
         v.setSpacing(12)
+        flt = card()
+        fl = QGridLayout(flt)
+        fl.setContentsMargins(16, 10, 16, 10)
+        fl.setHorizontalSpacing(12)
+        party_label = invoices.KINDS[kind]["party_label"]
+        self.f_number, self.f_party = QLineEdit(), QLineEdit()
+        self.f_from, self.f_to = QLineEdit(), QLineEdit()
+        self.f_number.setPlaceholderText("رقم")
+        self.f_party.setPlaceholderText("جزء من الاسم")
+        self.f_from.setPlaceholderText("2026-01-01")
+        self.f_to.setPlaceholderText("2026-12-31")
+        self.f_unpaid = QCheckBox("اللي عليها متبقي بس")
+        for i, (t, w) in enumerate((("رقم الفاتورة", self.f_number), (party_label, self.f_party),
+                                    ("من تاريخ", self.f_from), ("إلى تاريخ", self.f_to))):
+            fl.addWidget(field_label(t), 0, i)
+            fl.addWidget(w, 1, i)
+            w.returnPressed.connect(self.refresh)
+        fl.addWidget(self.f_unpaid, 1, 4)
+        fl.addWidget(button("بحث", "primary", self.refresh), 1, 5)
+        fl.addWidget(button("مسح الفلتر", "", self.clear_filter), 1, 6)
+        fl.setColumnStretch(1, 2)
+        v.addWidget(flt)
+        self.count = QLabel("")
+        self.count.setStyleSheet("color:#64748b")
+        v.addWidget(self.count)
         self.table = make_table(["الرقم", "التاريخ", "الطرف", "الإجمالي", "المدفوع", "المتبقي"])
         v.addWidget(self.table, 1)
         row = QHBoxLayout()
@@ -279,13 +325,25 @@ class InvoicesListPage(QWidget):
 
     @guard
     def refresh(self):
-        rows = invoices.list_invoices(self.conn, self.kind)
+        rows = invoices.list_invoices(self.conn, self.kind, number=self.f_number.text(), party=self.f_party.text(),
+                                      date_from=self.f_from.text(), date_to=self.f_to.text(),
+                                      unpaid_only=self.f_unpaid.isChecked())
+        filtered = any(e.text().strip() for e in (self.f_number, self.f_party, self.f_from, self.f_to)) \
+            or self.f_unpaid.isChecked()
+        self.count.setText(f"عدد الفواتير: {len(rows)}" + (" (نتيجة الفلتر)" if filtered else ""))
         self.table.setRowCount(len(rows))
         for r, i in enumerate(rows):
             vals = (i["number"], i["invoice_date"], i["party_name"], fmt_money(i["total_c"]),
                     fmt_money(i["paid_c"]), fmt_money(i["remaining_c"]))
             for c, val in enumerate(vals):
                 self.table.setItem(r, c, cell(val, data=i["id"] if c == 0 else None))
+
+    @guard
+    def clear_filter(self):
+        for e in (self.f_number, self.f_party, self.f_from, self.f_to):
+            e.clear()
+        self.f_unpaid.setChecked(False)
+        self.refresh()
 
     def _need(self):
         iid = selected_id(self.table)
@@ -308,8 +366,7 @@ class InvoicesListPage(QWidget):
     @guard
     def delete(self):
         iid = self._need()
-        if confirm(self, "حذف الفاتورة نهائياً؟\nهيتعكس أثرها على المخزون وحساب الطرف والخزينة، وهتختفي من كل "
-                         "الشاشات والتقارير وكشوف الحساب، ومش هتقدر ترجعها."):
+        if confirm(self, DELETE_WARNING):
             invoices.delete_invoice(self.conn, iid)
             self.refresh()
             QMessageBox.information(self, "تم", "تم حذف الفاتورة ✔")
