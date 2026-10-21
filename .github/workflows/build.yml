@@ -25,16 +25,16 @@ jobs:
           pip install -r requirements.txt
 
       - name: Build exe
-        run: pyinstaller --onefile --noconsole --name Hesabat --collect-submodules hesabat main.py
+        run: python tools/build_exe.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Hesabat-windows
-          path: dist/Hesabat.exe
+          name: HesabatStock-windows
+          path: dist/HesabatStock.exe
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Hesabat.exe
+          files: dist/HesabatStock.exe
