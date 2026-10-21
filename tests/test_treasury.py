@@ -21,17 +21,17 @@ class UpgradeTests(unittest.TestCase):
         path = tmp_db(); make_v1(path)
         conn = connect(path)
         self.assertIsNone(init_db(conn, path))
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 3)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 4)
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM invoices").fetchone()[0], 0)
         self.assertEqual(conn.execute("SELECT SUM(qty_m) FROM stock_movements").fetchone()[0], 5000)
         self.assertEqual(conn.execute("SELECT name FROM products").fetchone()[0], "سكر")
         self.assertEqual(tr.get_opening(conn), 0)
         backups = os.listdir(os.path.join(os.path.dirname(path), "backups"))
-        self.assertTrue(any("before_v2" in b for b in backups) and any("before_v3" in b for b in backups))
+        self.assertTrue(all(any(f"before_v{n}" in b for b in backups) for n in (2, 3, 4)))
         self.assertIsNone(init_db(conn, path))                      # التشغيل التاني مبيعملش حاجة
 
     def test_fresh_is_latest(self):
-        self.assertEqual(fresh().execute("PRAGMA user_version").fetchone()[0], 3)
+        self.assertEqual(fresh().execute("PRAGMA user_version").fetchone()[0], 4)
 
 
 class TreasuryTests(unittest.TestCase):
@@ -94,6 +94,11 @@ class TreasuryTests(unittest.TestCase):
         eid = tr.add_voucher(c, "receipt", "200", "customer", cust)
         tr.void_entry(c, eid)
         self.assertEqual(tr.balance(c), 100000)
+        self.assertEqual(c.execute("SELECT COUNT(*) FROM treasury_entries WHERE id=?", (eid,)).fetchone()[0], 0)  # اتمسح خالص
+        self.assertEqual(tr.recent_entries(c), [])
+        st = parties.statement(c, "customer", cust)
+        self.assertEqual(len(st["rows"]), 1)                            # مفيش سطر دفعة ولا "إلغاء" في الكشف
+        self.assertEqual(st["invoice_ids"], [None])
         self.assertEqual([r["balance_c"] for r in parties.list_parties(c, "customer") if r["id"] == cust][0], 50000)
         with self.assertRaises(ValidationError):
             tr.void_entry(c, eid)                                      # ملغي بالفعل

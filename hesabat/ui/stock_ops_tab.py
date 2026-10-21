@@ -26,7 +26,7 @@ class TransferPage(QWidget):
         v.setContentsMargins(26, 22, 26, 22)
         v.setSpacing(10)
         t = QLabel("تحويل أصناف بين المخازن")
-        t.setStyleSheet("font-size:19px;font-weight:bold;color:#0f172a")
+        t.setStyleSheet("font-size:19px;font-weight:bold")
         v.addWidget(t)
         self.src, self.dst = QComboBox(), QComboBox()
         self.prod = SearchCombo(by_number=True, placeholder="اكتب اسم الصنف أو رقمه")

@@ -35,7 +35,7 @@ class WarehousesTab(QWidget):
         left.addWidget(box)
 
         self.title = QLabel("أرصدة المخزن المحدد")
-        self.title.setStyleSheet("font-size:16px;font-weight:bold;color:#334155")
+        self.title.setStyleSheet("font-size:16px;font-weight:bold")
         right.addWidget(self.title)
         self.bal = make_table(["الصنف", "الرصيد"])
         right.addWidget(self.bal, 1)

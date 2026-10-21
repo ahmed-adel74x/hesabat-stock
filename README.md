@@ -21,7 +21,7 @@ python3 tools/test_migration.py ~/HesabatStock/stock.db
 ## الاختبارات
 ```
 cd tests
-python3 -m unittest test_core test_treasury test_invoices test_sales test_reports test_search smoke_ui_stub -v
+python3 -m unittest test_core test_treasury test_invoices test_sales test_reports test_search test_packaging smoke_ui_stub -v
 ```
 (أو `pytest tests` لو pytest متثبت)
 
@@ -39,3 +39,6 @@ tests/  tools/
 
 ## قواعد الأرقام
 المبالغ بالقروش (int) والكميات بالألف (int)، مفيش float في أي حساب.
+
+## بناء exe لويندوز
+التفاصيل في [DOCS.md](DOCS.md) (قسم 15). باختصار: ارفع المشروع على GitHub (Private) وشغّل **Build Windows exe** من تبويب Actions، أو على جهاز ويندوز شغّل `build_windows.bat`. دليل العميل: [CUSTOMER_GUIDE_AR.md](CUSTOMER_GUIDE_AR.md).

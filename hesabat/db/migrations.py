@@ -41,7 +41,7 @@ def _create_schema(conn):
 def _create_steps(conn, upto=SCHEMA_VERSION, start=2):
     for v in range(start, upto + 1):
         for st in UPGRADE_STEPS[v]:
-            conn.execute(st)
+            conn.execute(st) if isinstance(st, str) else st(conn)
 
 
 def init_db(conn, db_path):

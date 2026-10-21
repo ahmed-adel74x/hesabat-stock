@@ -93,8 +93,9 @@ class FakeBox(Dummy):
     warnings = []
     @classmethod
     def warning(cls, parent, title, text): cls.warnings.append(text)
+    infos = []
     @classmethod
-    def information(cls, *a): pass
+    def information(cls, parent, title, text): cls.infos.append(text)
     @classmethod
     def question(cls, *a): return cls.StandardButton.Yes
 
@@ -124,6 +125,7 @@ from hesabat.db.connection import connect
 from hesabat.db.migrations import init_db
 import hesabat.ui.common as common
 from hesabat.logic import inventory
+from hesabat.logic import products as products_logic
 from hesabat.ui.main_window import MainWindow
 from hesabat.ui.products_tab import ProductsTab
 from hesabat.ui.warehouses_tab import WarehousesTab
@@ -180,12 +182,43 @@ class UiFlow(unittest.TestCase):
         pt.f[2].setText("11"); pt.edit()
         pt.add()                                            # مكرر => تنبيه مش خطأ
         self.assertIn("موجود بالفعل", FakeBox.warnings[-1])
+        # --- تعديل الكمية من شاشة الأصناف
+        ids = lambda: {pt.table.item(r, 1).text(): (r, pt.table.item(r, 0).data(None)) for r in range(pt.table.rowCount())}
+        row, lid = ids()["لبن"]
+        pt.table._sel = row; pt.on_select()
+        self.assertEqual(pt.f[3].text(), "20")                              # الكمية الحالية في المخزن المختار
+        self.assertEqual(pt.labels[3].text(), "الكمية في المخزن")
+        moves = lambda: c.execute("SELECT COUNT(*) FROM stock_movements").fetchone()[0]
+        n = moves()
+        pt.f[1].setText("9"); pt.edit()                                     # تعديل السعر من غير لمس الكمية
+        self.assertEqual(moves(), n)
+        pt.f[3].setText("35"); pt.edit()                                    # تعديل الكمية
+        self.assertEqual(inventory.balance(c, lid, 1), 35000)
+        row, _ = ids()["لبن"]
+        self.assertEqual(pt.table.item(row, 5).text(), "35")                # عمود الكمية الكلية اتحدّث
+        self.assertEqual(pt.f[3].text(), "35")                              # والحقل بقى مرجع جديد
+        n = moves(); pt.edit(); self.assertEqual(moves(), n)                # تعديل تاني من غير تغيير = مفيش حركة
+        pt.f[3].setText("abc"); pt.edit()                                   # كمية غلط = تنبيه ومفيش تعديل
+        self.assertIn("الكمية", FakeBox.warnings[-1])
+        self.assertEqual(inventory.balance(c, lid, 1), 35000)
+        pt.f[3].setText(""); pt.edit()                                      # فاضية = سيبها زي ما هي
+        self.assertEqual(inventory.balance(c, lid, 1), 35000)
+        pt.f[3].setText("0"); pt.edit()                                     # الصفر مسموح
+        self.assertEqual(inventory.balance(c, lid, 1), 0)
+        pt.f[3].setText("35"); pt.edit()
+        pt.f[0].setText("لبن مجفف"); pt.add()                               # صنف محمّل وكميته متغيّرتش: الجديد كميته صفر
+        self.assertEqual(inventory.balance(c, ids()["لبن مجفف"][1], 1), 0)
+        row, _ = ids()["لبن"]
+        pt.table._sel = row; pt.on_select()
+        pt.f[0].setText("لبن كامل"); pt.f[3].setText("12"); pt.add()        # لو غيّرتها قبل الإضافة بتتسجل افتتاحية
+        self.assertEqual(inventory.balance(c, ids()["لبن كامل"][1], 1), 12000)
+        pt.clear_form(); self.assertEqual(pt.labels[3].text(), "الكمية الافتتاحية")
         # --- المخازن
         wt = WarehousesTab(c)
         wt.name.setText("فرع القاهرة"); wt.loc.setText("القاهرة"); wt.add()
         self.assertEqual(wt.table.rowCount(), 2)
         wt.table._sel = 0; wt.on_select()
-        self.assertEqual(wt.bal.rowCount(), 5)
+        self.assertEqual(wt.bal.rowCount(), len(products_logic.list_products(c)))   # كل الأصناف النشطة
         wt.table._sel = 1; wt.delete()                      # مخزن فاضي => يتحذف
         wt.name.setText("فرع المنصورة"); wt.add()
         # --- تحويل وجرد
@@ -194,8 +227,9 @@ class UiFlow(unittest.TestCase):
         self.assertEqual(tp.src.count(), 2)
         self.assertNotEqual(tp.src.currentData(), tp.dst.currentData())
         tp.prod.setCurrentIndex(tp.prod.findData(1))        # سكر (رصيده 40)
+        warned = len(FakeBox.warnings)
         tp.qty.setText("5"); tp.do()
-        self.assertEqual(len(FakeBox.warnings), 1)          # مفيش تنبيهات جديدة
+        self.assertEqual(len(FakeBox.warnings), warned)     # التحويل نفسه مفيهوش تنبيهات
         self.assertEqual(inventory.balance(c, 1, tp.dst.currentData()), 5000)
         sp = ops.count; sp.refresh()
         sp.table.item(0, 2).setText("12"); sp.on_changed(sp.table.item(0, 2))
@@ -206,6 +240,9 @@ class UiFlow(unittest.TestCase):
             e.setText(v)
         pa.add(); self.assertEqual(pa.table.rowCount(), 1)
         pa.table._sel = 0; pa.statement()
+        from hesabat.ui.parties_tab import StatementDialog
+        sd = StatementDialog(None, c, parties.statement(c, "supplier", pa.table.item(0, 0).data(None)))
+        sd.open_invoice(0); sd.open_invoice(99)                   # صف الرصيد الافتتاحي/صف مش موجود: مفيش حاجة تتفتح
         PartiesTab(c, "customer").refresh()
         # --- الخزينة
         tt = TreasuryTab(c)
@@ -264,9 +301,13 @@ class UiFlow(unittest.TestCase):
         self.assertEqual(treasury.balance(c), cash0)
         ed.qty.setText("x"); ed.add_line()                                # كمية غلط => تنبيه مش خطأ
         self.assertIn("الكمية", FakeBox.warnings[-1])
-        it.listing.refresh(); it.listing.table._sel = 0; it.listing.cancel()
+        it.listing.refresh(); it.listing.table._sel = 0; FakeBox.infos.clear(); it.listing.delete()
         self.assertEqual(inventory.balance(c, 1), stock0)
-        self.assertEqual(invoices.list_invoices(c, "purchase")[0]["status"], "cancelled")
+        self.assertEqual(invoices.list_invoices(c, "purchase"), [])        # اتمسحت ومبتظهرش كـ«ملغية»
+        self.assertEqual(c.execute("SELECT COUNT(*) FROM invoices WHERE kind='purchase'").fetchone()[0], 0)
+        self.assertEqual(it.listing.table.rowCount(), 0)
+        self.assertIn("حذف", FakeBox.infos[-1])
+        self.assertEqual(it.listing.table.columnCount() if isinstance(it.listing.table.columnCount(), int) else 6, 6)
         rt = InvoicesTab(c, "purchase_return"); re_ = rt.editor; re_.refresh()
         re_.prod.setCurrentIndex(re_.prod.findData(1)); re_.on_product()
         re_.qty.setText("2"); re_.add_line(); re_.save()
@@ -278,7 +319,7 @@ class UiFlow(unittest.TestCase):
         cash = parties.default_customer_id(c)
         self.assertEqual(se.party.currentData(), cash)                   # العميل النقدي هو الافتراضي
         se.prod.setCurrentIndex(se.prod.findData(1)); se.on_product()
-        self.assertEqual(se.price.text(), "15.00")                       # سعر البيع الافتراضي لسكر
+        self.assertEqual(se.price.text(), "15")                          # سعر البيع الافتراضي لسكر
         stock0 = inventory.balance(c, 1)
         se.qty.setText("2"); se.add_line()
         se.save()                                                        # عميل نقدي من غير دفع => منع
@@ -328,6 +369,135 @@ class UiFlow(unittest.TestCase):
         rc.on_invalid("x")                                               # رسالة التحقق بتظهر كتنبيه
         self.assertEqual(FakeBox.warnings[-1], "x")
         ReportsTab(c).refresh()
+
+
+class SelfTest(unittest.TestCase):
+    """الاختبار الذاتي اللي بيشتغل على الـ exe: هنا بنتأكد إن منطقه نفسه شغال وإنه بيفشل لما حاجة تفشل."""
+
+    def run_it(self):
+        from hesabat import selftest
+        out = os.path.join(tempfile.mkdtemp(), "out.txt")
+        old = os.environ.get("HESABAT_DATA_DIR")
+        try:
+            code = selftest.run_selftest(out, strict_files=False)
+        finally:
+            if old is None: os.environ.pop("HESABAT_DATA_DIR", None)
+            else: os.environ["HESABAT_DATA_DIR"] = old
+        with open(out, encoding="utf-8") as f:
+            return code, f.read()
+
+    def test_passes(self):
+        code, text = self.run_it()
+        self.assertEqual(code, 0, text)
+        self.assertIn("SELFTEST OK", text)
+        self.assertIn("الشاشات: 11", text)
+        self.assertIn("التقارير: 9", text)
+
+    def test_fails_when_something_breaks(self):
+        from hesabat.logic import export
+        real = export.to_excel
+        export.to_excel = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        try:
+            code, text = self.run_it()
+        finally:
+            export.to_excel = real
+        self.assertEqual(code, 1)
+        self.assertIn("SELFTEST FAILED", text)
+        self.assertIn("boom", text)
+
+
+class PrintingTests(unittest.TestCase):
+    """الطباعة: بنختبر منطقها (حماية الطابعة من المسح، البديل، التشخيص). الطباعة الفعلية لازم تتجرب على جهاز حقيقي."""
+
+    def setUp(self):
+        from hesabat.ui import printing
+        self.p = printing
+        self.saved = (printing._preview, printing._open_pdf, printing.QPrintPreviewDialog, printing.QDesktopServices)
+
+    def tearDown(self):
+        self.p._preview, self.p._open_pdf, self.p.QPrintPreviewDialog, self.p.QDesktopServices = self.saved
+
+    def test_preview_keeps_printer_and_document_alive(self):
+        """السبب اللي كان بيوقّع الطباعة: الطابعة لازم تفضل متخزّنة طول عمر النافذة (مش مجرد وسيط في الإنشاء)."""
+        seen = {}
+
+        class FakeDialog:
+            def __init__(self, printer, parent=None):
+                seen["printer"], self.paintRequested = printer, types.SimpleNamespace(connect=lambda f: seen.setdefault("cb", f))
+            def resize(self, *a): pass
+            def exec(self): seen["keep"] = getattr(self, "_keep", None)
+        self.p.QPrintPreviewDialog = FakeDialog
+        doc = self.p._document("<p>x</p>")
+        self.p._preview(None, doc, False)
+        self.assertIsNotNone(seen["keep"])
+        self.assertIs(seen["keep"][0], seen["printer"])
+        self.assertIs(seen["keep"][1], doc)
+
+    def test_paint_errors_are_logged_not_lost(self):
+        seen = {}
+        class FakeDialog:
+            def __init__(self, printer, parent=None):
+                self.paintRequested = types.SimpleNamespace(connect=lambda f: seen.setdefault("cb", f))
+            def resize(self, *a): pass
+            def exec(self): pass
+        self.p.QPrintPreviewDialog = FakeDialog
+        class BadDoc:
+            def print_(self, printer): raise RuntimeError("طباعة بايظة")
+        self.p._preview(None, BadDoc(), False)
+        old = os.environ.get("HESABAT_DATA_DIR")
+        os.environ["HESABAT_DATA_DIR"] = tempfile.mkdtemp()
+        try:
+            seen["cb"](object())                                          # مفيش استثناء بيطلع، والخطأ بيتسجل
+            from hesabat import applog
+            with open(applog.log_path(), encoding="utf-8") as f:
+                self.assertIn("طباعة بايظة", f.read())
+        finally:
+            if old is None: os.environ.pop("HESABAT_DATA_DIR", None)
+            else: os.environ["HESABAT_DATA_DIR"] = old
+
+    def test_falls_back_to_pdf_when_preview_breaks(self):
+        calls = []
+        def broken(*a, **k): raise RuntimeError("no preview")
+        self.p._preview = broken
+        self.p._open_pdf = lambda doc, landscape, name: calls.append((name, landscape)) or "/tmp/x.pdf"
+        FakeBox.infos.clear()
+        self.p._print_html(None, "<p>x</p>", True, "report")
+        self.assertEqual(calls, [("report", True)])
+        self.assertIn("PDF", FakeBox.infos[-1])
+
+    def test_open_pdf(self):
+        class Desktop:
+            ok = True
+            @staticmethod
+            def openUrl(url): return Desktop.ok
+        self.p.QDesktopServices = Desktop
+        path = self.p._open_pdf(self.p._document("<p>x</p>"), False, "invoice")
+        self.assertTrue(os.path.exists(path) and "invoice" in os.path.basename(path))
+        Desktop.ok = False
+        from hesabat.logic.errors import ValidationError
+        with self.assertRaises(ValidationError) as cm:                    # لو برنامج العرض ما اتفتحش نقوله مكان الملف
+            self.p._open_pdf(self.p._document("<p>x</p>"), False, "invoice")
+        self.assertIn(".pdf", str(cm.exception))
+
+    def test_wide_reports_print_landscape(self):
+        self.assertFalse(self.p._wide({"columns": [1] * 5}))
+        self.assertTrue(self.p._wide({"columns": [1] * 6}))
+
+    def test_print_check_command(self):
+        from hesabat import selftest
+        out = os.path.join(tempfile.mkdtemp(), "p.txt")
+        old = os.environ.get("HESABAT_DATA_DIR")
+        try:
+            code = selftest.run_print_check(out, strict_files=False, preview_seconds=0.05)
+        finally:
+            if old is None: os.environ.pop("HESABAT_DATA_DIR", None)
+            else: os.environ["HESABAT_DATA_DIR"] = old
+        with open(out, encoding="utf-8") as f:
+            text = f.read()
+        self.assertEqual(code, 0, text)
+        self.assertIn("PRINT CHECK DONE", text)
+        self.assertIn("الطابعة الافتراضية", text)
+        self.assertIn("نافذة المعاينة", text)
 
 
 if __name__ == "__main__":

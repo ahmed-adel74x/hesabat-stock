@@ -79,8 +79,13 @@ def parse_qty(text, field="الكمية", allow_zero=False, allow_empty=False):
     return m
 
 
+def _drop_zero_cents(s):
+    """2,000.00 -> 2,000 (لو فيه قروش فعلاً زي 12.50 بتفضل زي ما هي)."""
+    return s[:-3] if s.endswith(".00") else s
+
+
 def fmt_money(c):
-    return f"{Decimal(c) / 100:,.2f}"
+    return _drop_zero_cents(f"{Decimal(c) / 100:,.2f}")
 
 
 def fmt_qty(m):
@@ -89,7 +94,7 @@ def fmt_qty(m):
 
 
 def plain_money(c):
-    return f"{Decimal(c) / 100:.2f}"
+    return _drop_zero_cents(f"{Decimal(c) / 100:.2f}")
 
 
 def plain_qty(m):

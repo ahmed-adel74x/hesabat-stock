@@ -5,7 +5,7 @@ from hesabat.db.connection import connect, tx
 from hesabat.db.migrations import init_db, MigrationError
 from hesabat.logic import inventory, products, warehouses, parties, reports
 from hesabat.logic.errors import ValidationError
-from hesabat.logic.money import parse_money, parse_qty, to_cents, fmt_money, fmt_qty
+from hesabat.logic.money import parse_money, parse_qty, to_cents, fmt_money, fmt_qty, plain_money
 
 
 def fresh():
@@ -29,6 +29,10 @@ class MoneyTests(unittest.TestCase):
             parse_qty("0")
         self.assertEqual(parse_money("-5", allow_negative=True), -500)
         self.assertEqual(fmt_money(123456), "1,234.56")
+        self.assertEqual(fmt_money(200000), "2,000")           # من غير .00
+        self.assertEqual(fmt_money(1250), "12.50")             # القروش الحقيقية بتفضل
+        self.assertEqual(fmt_money(0), "0")
+        self.assertEqual(plain_money(200000), "2000")
         self.assertEqual(fmt_qty(2500), "2.5")
         self.assertEqual(fmt_qty(0), "0")
 
@@ -41,7 +45,7 @@ class MigrationTests(unittest.TestCase):
         self.assertTrue(rep["ok"], rep["text"])
         self.assertTrue(os.path.exists(rep["backup"]))
         self.assertTrue(os.path.exists(rep["report_file"]))
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 3)
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 4)
         self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
         self.assertEqual(conn.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         # الأرصدة بعد الترحيل = الأرصدة القديمة بالظبط
@@ -97,6 +101,43 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(row[0], 1500)
         self.assertEqual(inventory.balance(c, pid), 36000)
         self.assertEqual(reports.dashboard(c)["tp"], 4 * (1800 - 1500))     # ربح 12.00 ثابت
+
+    def test_set_quantity(self):
+        c, pid = self.c, self.pid
+        w2 = warehouses.create(c, "فرع")
+        self.assertEqual(inventory.set_quantity(c, pid, 1, "25"), 15000)          # الفرق بيرجع
+        self.assertEqual(inventory.balance(c, pid, 1), 25000)
+        self.assertEqual(inventory.set_quantity(c, pid, 1, "7.5"), -17500)
+        self.assertEqual(inventory.set_quantity(c, pid, 1, "7.5"), 0)             # نفس الكمية = مفيش حركة
+        adj = c.execute("SELECT * FROM stock_movements WHERE kind='adjust' ORDER BY id").fetchall()
+        self.assertEqual([r["qty_m"] for r in adj], [15000, -17500])
+        self.assertEqual((adj[0]["ref_type"], adj[0]["unit_cost_c"]), ("manual", products.get(c, pid)["avg_cost_c"]))
+        self.assertEqual(inventory.set_quantity(c, pid, w2, "4"), 4000)           # مخزن تاني مبيأثرش على الأول
+        self.assertEqual((inventory.balance(c, pid, 1), inventory.balance(c, pid)), (7500, 11500))
+        self.assertEqual(inventory.set_quantity(c, pid, 1, "0"), -7500)           # الصفر مسموح
+        for bad in ("-1", "abc", ""):
+            with self.assertRaises(ValidationError):
+                inventory.set_quantity(c, pid, 1, bad)
+        with self.assertRaises(ValidationError):
+            inventory.set_quantity(c, 9999, 1, "1")
+        with self.assertRaises(ValidationError):
+            inventory.set_quantity(c, pid, 9999, "1")
+
+    def test_update_product_with_quantity(self):
+        c, pid = self.c, self.pid
+        products.update(c, pid, "سكر ناعم", "10", "16", "5", "30")               # 10 -> 30 في المخزن الرئيسي
+        self.assertEqual((inventory.balance(c, pid), products.get(c, pid)["name"]), (30000, "سكر ناعم"))
+        n = c.execute("SELECT COUNT(*) FROM stock_movements").fetchone()[0]
+        products.update(c, pid, "سكر ناعم", "10", "17", "5")                      # من غير كمية: مفيش حركة
+        products.update(c, pid, "سكر ناعم", "10", "17", "5", "")                  # فاضية = مفيش تغيير
+        self.assertEqual(c.execute("SELECT COUNT(*) FROM stock_movements").fetchone()[0], n)
+        w2 = warehouses.create(c, "فرع")
+        products.update(c, pid, "سكر ناعم", "10", "17", "5", "8", w2)             # كمية المخزن التاني
+        self.assertEqual((inventory.balance(c, pid, 1), inventory.balance(c, pid, w2)), (30000, 8000))
+        for bad in ("abc", "-5"):                                                  # كمية غلط: مفيش تعديل جزئي حتى للاسم
+            with self.assertRaises(ValidationError):
+                products.update(c, pid, "اسم جديد", "10", "17", "5", bad)
+            self.assertEqual(products.get(c, pid)["name"], "سكر ناعم")
 
     def test_sale_blocked_without_stock(self):
         with self.assertRaises(ValidationError) as cm:
@@ -183,6 +224,23 @@ class TxTests(unittest.TestCase):
                 c.execute("INSERT INTO warehouses(name,created_at) VALUES('x','now')")
                 raise RuntimeError
         self.assertEqual(c.execute("SELECT COUNT(*) FROM warehouses").fetchone()[0], 1)
+
+
+class PreferencesTests(unittest.TestCase):
+    def test_theme_persists(self):
+        from hesabat.logic import preferences
+        from hesabat.ui.theme import build_style, PALETTES
+        path = tmp_db()
+        c = connect(path); init_db(c, path)
+        self.assertEqual(preferences.get_theme(c), "light")
+        preferences.set_theme(c, "dark"); preferences.set_theme(c, "dark")
+        self.assertEqual(preferences.get_theme(c), "dark")
+        with self.assertRaises(ValueError):
+            preferences.set_theme(c, "blue")
+        c.close()
+        for mode in PALETTES:
+            self.assertNotIn("%(", build_style(mode))
+        self.assertNotEqual(build_style("light"), build_style("dark"))
 
 
 if __name__ == "__main__":

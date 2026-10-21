@@ -82,11 +82,13 @@ def statement(conn, kind, pid):
     party = get(conn, kind, pid)
     running = party["opening_balance_c"]
     rows = [(party["created_at"], ENTRY_LABELS["opening"], "", running, running)]
+    invoice_ids = [None]        # رقم الفاتورة (id) لكل صف في rows، أو None لو الصف مش مرتبط بفاتورة
     for e in conn.execute("SELECT * FROM party_ledger WHERE party_type=? AND party_id=? ORDER BY created_at,id",
                           (kind, pid)):
         running += e["amount_c"]
         rows.append((e["created_at"], ENTRY_LABELS[e["entry_type"]], e["note"], e["amount_c"], running))
-    return {"party": party, "rows": rows, "balance_c": running}
+        invoice_ids.append(e["ref_id"] if e["ref_type"] == "invoice" else None)
+    return {"party": party, "rows": rows, "invoice_ids": invoice_ids, "balance_c": running}
 
 
 def default_customer_id(conn):

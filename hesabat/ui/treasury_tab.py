@@ -8,7 +8,6 @@ from .search_combo import SearchCombo
 from .common import (ROLE, button, card, cell, confirm, fill_combo, field_label, guard, make_table, selected_id,
                      stat_card)
 
-GREY = "#94a3b8"
 
 
 class VouchersPage(QWidget):
@@ -62,7 +61,7 @@ class VouchersPage(QWidget):
         op.addWidget(button("إلغاء السند المحدد", "danger", self.void))
         v.addLayout(op)
 
-        self.table = make_table(["التاريخ", "النوع", "الطرف / البيان", "المبلغ", "الحالة"])
+        self.table = make_table(["التاريخ", "النوع", "الطرف / البيان", "المبلغ"])
         v.addWidget(self.table, 1)
 
     @guard
@@ -76,11 +75,9 @@ class VouchersPage(QWidget):
         rows = treasury.recent_entries(self.conn, 100)
         self.table.setRowCount(len(rows))
         for r, e in enumerate(rows):
-            gone = bool(e["voided"])
-            kind = treasury.KIND_LABELS[e["kind"]]
-            vals = (e["entry_date"], kind, e["what"], fmt_money(e["amount_c"]), "ملغي" if gone else "")
+            vals = (e["entry_date"], treasury.KIND_LABELS[e["kind"]], e["what"], fmt_money(e["amount_c"]))
             for c, val in enumerate(vals):
-                self.table.setItem(r, c, cell(val, data=e["id"] if c == 0 else None, fg=GREY if gone else None))
+                self.table.setItem(r, c, cell(val, data=e["id"] if c == 0 else None))
 
     @guard
     def on_type(self):
@@ -115,7 +112,7 @@ class VouchersPage(QWidget):
         eid = selected_id(self.table)
         if eid is None:
             raise ValidationError("اختر سند من الجدول الأول")
-        if confirm(self, "إلغاء السند؟ هيتعكس أثره على الخزينة وحساب الطرف."):
+        if confirm(self, "إلغاء السند؟ هيتمسح خالص وهيتشال أثره من الخزينة وحساب الطرف."):
             treasury.void_entry(self.conn, eid)
             self.refresh()
 
@@ -140,7 +137,7 @@ class StatementPage(QWidget):
         row = QHBoxLayout()
         row.setSpacing(12)
         self.cards = {}
-        for key, title, color in (("o", "رصيد أول المدة", "#475569"), ("i", "إجمالي الوارد", "#16a34a"),
+        for key, title, color in (("o", "رصيد أول المدة", "#64748b"), ("i", "إجمالي الوارد", "#16a34a"),
                                   ("x", "إجمالي الصادر", "#ea580c"), ("c", "رصيد آخر المدة", "#2563eb")):
             f, lab = stat_card(title, color)
             self.cards[key] = lab
@@ -170,7 +167,7 @@ class ClosingPage(QWidget):
         v.setContentsMargins(18, 14, 18, 14)
         v.setSpacing(12)
         self.info = QLabel("")
-        self.info.setStyleSheet("font-size:15px;color:#334155")
+        self.info.setStyleSheet("font-size:15px")
         v.addWidget(self.info)
         box = card()
         g = QGridLayout(box)

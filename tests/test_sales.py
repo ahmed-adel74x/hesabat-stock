@@ -140,12 +140,43 @@ class SaleReturnTests(SalesBase):
         self.assertEqual(self.cust_bal(), 5000 - 10000)
 
 
+class DeleteSaleTests(SalesBase):
+    def numbers(self):
+        return (self.stock(), self.cust_bal(), tr.balance(self.c), reports.dashboard(self.c)["ts"], reports.dashboard(self.c)["tp"])
+
+    def test_delete_sale(self):
+        before = self.numbers()
+        iid = self.sell(discount="10", paid="30")
+        inv.delete_invoice(self.c, iid)
+        self.assertEqual(self.numbers(), before)                        # المخزون وحساب العميل والخزينة والمبيعات والربح
+        self.assertEqual(inv.list_invoices(self.c, "sale"), [])
+        for t in ("invoices", "invoice_items", "party_ledger", "treasury_entries"):
+            self.assertEqual(self.c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0], 0, t)
+        self.assertEqual(self.c.execute("SELECT COUNT(*) FROM stock_movements WHERE ref_type='invoice'").fetchone()[0], 0)
+        self.assertEqual(len(parties.statement(self.c, "customer", self.cust)["rows"]), 1)
+
+    def test_delete_sale_return_and_keeps_others(self):
+        sale = self.sell(paid="0")
+        before = self.numbers()
+        rid = self.sell(items=[(self.sugar, "1", "20")], kind="sale_return", paid="5")
+        inv.delete_invoice(self.c, rid)
+        self.assertEqual(self.numbers(), before)
+        self.assertEqual([r["id"] for r in inv.list_invoices(self.c, "sale")], [sale])
+
+    def test_delete_blocked_when_return_cannot_be_reversed(self):
+        rid = self.sell(items=[(self.sugar, "2", "20")], kind="sale_return")
+        self.sell(items=[(self.sugar, "11", "20")])
+        with self.assertRaises(ValidationError):
+            inv.delete_invoice(self.c, rid)
+        self.assertEqual(len(inv.list_invoices(self.c, "sale_return")), 1)
+
+
 class HtmlTests(SalesBase):
     def test_invoice_html(self):
         p = products.create(self.c, "<b>زيت</b>", "5", "9", "0", "10")
         iid = self.sell(items=[(p, "2", "9"), (self.sugar, "1", "15")], discount="3", paid="10")
         h = inv.invoice_html(self.c, iid, shop_name="محل الأمل")
-        for s in ("فاتورة بيع رقم 1", "أحمد", "محل الأمل", "المخزن الرئيسي", "33.00", "3.00", "30.00", "10.00", "20.00"):
+        for s in ("فاتورة بيع رقم 1", "أحمد", "محل الأمل", "المخزن الرئيسي", "33", "3", "30", "10", "20"):
             self.assertIn(s, h)
         self.assertIn("&lt;b&gt;زيت&lt;/b&gt;", h)                    # الأسماء بتتعمل escape
         self.assertNotIn("<b>زيت</b>", h)

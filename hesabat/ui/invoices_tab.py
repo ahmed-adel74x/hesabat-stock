@@ -1,15 +1,40 @@
-from PySide6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QTabWidget,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+                               QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
 
 from ..logic import invoices, parties, products, treasury, warehouses
 from ..logic.errors import ValidationError
 from ..logic.money import fmt_money, plain_money, plain_qty
 from .common import (button, card, cell, confirm, fill_combo, field_label, guard, make_table, safe_call,
                      selected_id)
-from .printing import print_invoice
+from .printing import open_invoice_pdf, print_invoice
 from .search_combo import SearchCombo
 
-GREY = "#94a3b8"
+
+
+class InvoiceViewDialog(QDialog):
+    """عرض فاتورة كاملة بتفاصيلها (للقراءة بس)، مع زر طباعة."""
+
+    def __init__(self, parent, conn, invoice_id):
+        super().__init__(parent)
+        self.conn, self.invoice_id = conn, invoice_id
+        self.setWindowTitle("تفاصيل الفاتورة")
+        self.resize(640, 560)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(16, 16, 16, 16)
+        view = QTextBrowser()
+        view.setStyleSheet("background:#ffffff;color:#0f172a;")      # الفاتورة بتفضل زي الورقة حتى في الدارك
+        view.document().setDefaultStyleSheet("body{color:#0f172a;}")
+        view.setHtml(invoices.invoice_html(conn, invoice_id))
+        v.addWidget(view, 1)
+        row = QHBoxLayout()
+        row.addWidget(button("طباعة", "success", self.print))
+        row.addStretch(1)
+        row.addWidget(button("إغلاق", "primary", self.accept))
+        v.addLayout(row)
+
+    @guard
+    def print(self):
+        print_invoice(self, self.conn, self.invoice_id)
 
 
 class InvoicePage(QWidget):
@@ -25,7 +50,7 @@ class InvoicePage(QWidget):
         v.setContentsMargins(18, 12, 18, 12)
         v.setSpacing(10)
         self.title = QLabel()
-        self.title.setStyleSheet("font-size:18px;font-weight:bold;color:#0f172a")
+        self.title.setStyleSheet("font-size:18px;font-weight:bold")
         v.addWidget(self.title)
 
         head = card()
@@ -67,9 +92,9 @@ class InvoicePage(QWidget):
         self.discount, self.paid = QLineEdit(), QLineEdit()
         self.discount.setPlaceholderText("0")
         self.paid.setPlaceholderText("0")
-        self.l_sub, self.l_total, self.l_rem = QLabel("0.00"), QLabel("0.00"), QLabel("0.00")
+        self.l_sub, self.l_total, self.l_rem = QLabel("0"), QLabel("0"), QLabel("0")
         for lab in (self.l_sub, self.l_total, self.l_rem):
-            lab.setStyleSheet("font-size:16px;font-weight:bold;color:#0f172a")
+            lab.setStyleSheet("font-size:16px;font-weight:bold")
         cells = (("الإجمالي الفرعي", self.l_sub), ("الخصم", self.discount), ("الإجمالي", self.l_total),
                  (self.info["cash_label"], self.paid), ("المتبقي", self.l_rem))
         for i, (txt, w) in enumerate(cells):
@@ -241,13 +266,14 @@ class InvoicesListPage(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(18, 14, 18, 14)
         v.setSpacing(12)
-        self.table = make_table(["الرقم", "التاريخ", "الطرف", "الإجمالي", "المدفوع", "المتبقي", "الحالة"])
+        self.table = make_table(["الرقم", "التاريخ", "الطرف", "الإجمالي", "المدفوع", "المتبقي"])
         v.addWidget(self.table, 1)
         row = QHBoxLayout()
         row.setSpacing(10)
         row.addWidget(button("فتح للتعديل", "primary", self.open_edit))
         row.addWidget(button("طباعة", "success", self.print_selected))
-        row.addWidget(button("إلغاء الفاتورة", "danger", self.cancel))
+        row.addWidget(button("عرض PDF", "", self.open_pdf))
+        row.addWidget(button("حذف الفاتورة", "danger", self.delete))
         row.addStretch(1)
         v.addLayout(row)
 
@@ -256,11 +282,10 @@ class InvoicesListPage(QWidget):
         rows = invoices.list_invoices(self.conn, self.kind)
         self.table.setRowCount(len(rows))
         for r, i in enumerate(rows):
-            gone = i["status"] == "cancelled"
             vals = (i["number"], i["invoice_date"], i["party_name"], fmt_money(i["total_c"]),
-                    fmt_money(i["paid_c"]), fmt_money(i["remaining_c"]), "ملغية" if gone else "")
+                    fmt_money(i["paid_c"]), fmt_money(i["remaining_c"]))
             for c, val in enumerate(vals):
-                self.table.setItem(r, c, cell(val, data=i["id"] if c == 0 else None, fg=GREY if gone else None))
+                self.table.setItem(r, c, cell(val, data=i["id"] if c == 0 else None))
 
     def _need(self):
         iid = selected_id(self.table)
@@ -277,12 +302,17 @@ class InvoicesListPage(QWidget):
         print_invoice(self, self.conn, self._need())
 
     @guard
-    def cancel(self):
+    def open_pdf(self):
+        open_invoice_pdf(self, self.conn, self._need())
+
+    @guard
+    def delete(self):
         iid = self._need()
-        if confirm(self, "إلغاء الفاتورة؟ هيتعكس أثرها على المخزون وحساب الطرف والخزينة."):
-            invoices.cancel_invoice(self.conn, iid)
+        if confirm(self, "حذف الفاتورة نهائياً؟\nهيتعكس أثرها على المخزون وحساب الطرف والخزينة، وهتختفي من كل "
+                         "الشاشات والتقارير وكشوف الحساب، ومش هتقدر ترجعها."):
+            invoices.delete_invoice(self.conn, iid)
             self.refresh()
-            QMessageBox.information(self, "تم", "تم إلغاء الفاتورة ✔")
+            QMessageBox.information(self, "تم", "تم حذف الفاتورة ✔")
 
 
 class InvoicesTab(QWidget):

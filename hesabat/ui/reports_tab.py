@@ -29,9 +29,9 @@ class DashboardPage(QScrollArea):
         self.section("📅 اليوم", [("ts", "المبيعات", "#2563eb"), ("tp", "الربح", "#16a34a"), ("tb", "المشتريات", "#ea580c")])
         self.section("🗓️ الشهر", [("ms", "المبيعات", "#2563eb"), ("mp", "الربح", "#16a34a"), ("mb", "المشتريات", "#ea580c")])
         self.section("📦 المخزون", [("cv", "القيمة بالتكلفة", "#7c3aed"), ("sv", "القيمة بسعر البيع", "#7c3aed"),
-                                     ("ep", "الربح المتوقع", "#16a34a"), ("cnt", "عدد الأصناف", "#475569")])
+                                     ("ep", "الربح المتوقع", "#16a34a"), ("cnt", "عدد الأصناف", "#64748b")])
         lbl = QLabel("⚠️ أصناف قاربت على الخلوص")
-        lbl.setStyleSheet("color:#334155;font-size:17px;font-weight:bold;margin-top:6px")
+        lbl.setStyleSheet("font-size:17px;font-weight:bold;margin-top:6px")
         self.rl.addWidget(lbl)
         self.low = QTableWidget(0, 2)
         self.low.setHorizontalHeaderLabels(["الصنف", "المتبقي"])
@@ -59,7 +59,7 @@ class DashboardPage(QScrollArea):
 
     def section(self, text, items):
         lbl = QLabel(text)
-        lbl.setStyleSheet("color:#334155;font-size:17px;font-weight:bold;margin-top:6px")
+        lbl.setStyleSheet("font-size:17px;font-weight:bold;margin-top:6px")
         self.rl.addWidget(lbl)
         row = QHBoxLayout()
         row.setSpacing(12)
@@ -150,12 +150,13 @@ class ReportsCenterPage(QWidget):
         row.addWidget(button("تصدير Excel", "success", self.export_excel))
         row.addWidget(button("تصدير PDF", "success", self.export_pdf))
         row.addWidget(button("طباعة", "", self.print_report))
+        row.addWidget(button("عرض PDF", "", self.open_pdf))
         row.addStretch(1)
         g.addLayout(row, 2, 0, 1, 6)
         v.addWidget(top)
 
         self.title = QLabel("")
-        self.title.setStyleSheet("font-size:18px;font-weight:bold;color:#0f172a")
+        self.title.setStyleSheet("font-size:18px;font-weight:bold")
         self.subtitle = QLabel("")
         self.subtitle.setStyleSheet("color:#64748b")
         self.status = QLabel("")
@@ -166,7 +167,7 @@ class ReportsCenterPage(QWidget):
         v.addWidget(self.table, 1)
         self.summary = QLabel("")
         self.summary.setWordWrap(True)
-        self.summary.setStyleSheet("font-size:15px;font-weight:bold;color:#0f172a")
+        self.summary.setStyleSheet("font-size:15px;font-weight:bold")
         v.addWidget(self.summary)
         self.kind.currentIndexChanged.connect(self.on_kind)
         self.on_kind()
@@ -270,6 +271,12 @@ class ReportsCenterPage(QWidget):
         if self.report is None:
             raise ValidationError("اعرض التقرير الأول")
         printing.print_report(self, self.report)
+
+    @guard
+    def open_pdf(self):
+        if self.report is None:
+            raise ValidationError("اعرض التقرير الأول")
+        printing.open_report_pdf(self, self.report)
 
 
 class ReportsTab(QWidget):

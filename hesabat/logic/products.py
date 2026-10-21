@@ -52,11 +52,16 @@ def create(conn, name, buy, sell, min_qty="0", opening_qty="0", warehouse_id=Non
         return pid
 
 
-def update(conn, pid, name, buy, sell, min_qty):
+def update(conn, pid, name, buy, sell, min_qty, qty=None, warehouse_id=None):
+    """qty (اختياري): لو اتبعتت الكمية الجديدة في المخزن (الأول لو warehouse_id فاضي) بتتسوّى بحركة adjust.
+    فاضية أو None = مبنلمسش المخزون."""
     n = _name(name)
     buy_c = parse_money(buy, "سعر الشراء", allow_empty=True)
     sell_c = parse_money(sell, "سعر البيع", allow_empty=True)
     min_m = parse_qty(min_qty, "حد التنبيه", allow_zero=True, allow_empty=True)
+    change_qty = qty is not None and str(qty).strip() != ""
+    if change_qty:
+        parse_qty(qty, "الكمية", allow_zero=True)       # نتحقق قبل ما نعدّل أي حاجة
     with tx(conn):
         inventory.get_product(conn, pid)
         try:
@@ -64,6 +69,9 @@ def update(conn, pid, name, buy, sell, min_qty):
                          (n, buy_c, sell_c, min_m, pid))
         except sqlite3.IntegrityError:
             raise ValidationError("الاسم مستخدم لصنف آخر")
+        if change_qty:
+            wid = warehouse_id or conn.execute("SELECT MIN(id) FROM warehouses WHERE active=1").fetchone()[0]
+            inventory.set_quantity(conn, pid, wid, qty, "تعديل الكمية من شاشة الأصناف")
 
 
 def deactivate(conn, pid):

@@ -5,7 +5,7 @@ from datetime import datetime
 
 
 def data_dir():
-    d = os.path.join(os.path.expanduser("~"), "HesabatStock")
+    d = os.environ.get("HESABAT_DATA_DIR") or os.path.join(os.path.expanduser("~"), "HesabatStock")
     os.makedirs(d, exist_ok=True)
     return d
 

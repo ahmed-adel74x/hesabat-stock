@@ -1,6 +1,8 @@
+import os
 import unittest
 from datetime import datetime, timedelta
 from helpers import tmp_db
+from hesabat.db import maintenance
 from hesabat.db.connection import connect
 from hesabat.db.migrations import init_db
 from hesabat.logic import inventory, invoices as inv, parties, products, treasury as tr
@@ -139,6 +141,11 @@ class PurchaseTests(InvoiceBase):
         st = parties.statement(self.c, "supplier", self.sup)
         self.assertEqual(st["balance_c"], 10000)
         self.assertGreaterEqual(len(st["rows"]), 4)
+        # كل صف فاتورة في الكشف مربوط برقمها عشان الواجهة تفتحها بتفاصيلها
+        self.assertEqual(len(st["invoice_ids"]), len(st["rows"]))
+        self.assertEqual(st["invoice_ids"][0], None)                   # صف الرصيد الافتتاحي
+        self.assertIn(iid, st["invoice_ids"])
+        self.assertTrue(inv.invoice_html(self.c, iid))                 # والفاتورة قابلة للعرض
 
     def test_cancel_blocked_if_sold(self):
         iid = self.make()
@@ -195,6 +202,139 @@ class PurchaseReturnTests(InvoiceBase):
         with self.assertRaises(ValidationError):
             inv.update_invoice(self.c, rid, self.sup, 1, [(self.sugar, "11", "10")])   # كمية أكبر من اللي كان في المخزن
         self.assertEqual(self.bal(self.sugar), 1000)
+
+
+class DeleteTests(InvoiceBase):
+    """الحذف بيمسح الفاتورة وكل أثرها، ومبيغيّرش أي رصيد."""
+
+    def snap(self):
+        return (self.bal(self.sugar), self.sup_bal(), tr.balance(self.c), products.get(self.c, self.sugar)["avg_cost_c"])
+
+    def rows(self, iid):
+        q = lambda sql, *a: self.c.execute(sql, a).fetchone()[0]
+        return [q("SELECT COUNT(*) FROM invoices WHERE id=?", iid), q("SELECT COUNT(*) FROM invoice_items WHERE invoice_id=?", iid),
+                q("SELECT COUNT(*) FROM stock_movements WHERE ref_type='invoice' AND ref_id=?", iid),
+                q("SELECT COUNT(*) FROM party_ledger"), q("SELECT COUNT(*) FROM treasury_entries")]
+
+    def test_delete_leaves_no_trace(self):
+        before = self.snap()
+        iid = self.make(paid="50", discount="10")
+        self.assertNotEqual(self.snap(), before)
+        inv.delete_invoice(self.c, iid)
+        self.assertEqual(self.snap(), before)                           # المخزون وحساب المورد والخزينة والمتوسط زي ما كانوا
+        self.assertEqual(self.rows(iid), [0, 0, 0, 0, 0])               # ولا أثر في أي جدول
+        self.assertEqual(inv.list_invoices(self.c, "purchase"), [])     # ومبتظهرش في القائمة
+        for fn in (lambda: inv.delete_invoice(self.c, iid), lambda: inv.get_invoice(self.c, iid)):
+            with self.assertRaises(ValidationError):
+                fn()
+        self.assertEqual(parties.statement(self.c, "supplier", self.sup)["balance_c"], 10000)
+        self.assertEqual(len(parties.statement(self.c, "supplier", self.sup)["rows"]), 1)    # كشف الحساب نضيف
+
+    def test_delete_after_edits(self):
+        before = self.snap()
+        iid = self.make(paid="50")
+        sup2 = parties.create(self.c, "supplier", "مورد 2")
+        inv.update_invoice(self.c, iid, sup2, 1, [(self.sugar, "12", "20"), (self.tea, "4", "5")], "10", "100")
+        inv.update_invoice(self.c, iid, self.sup, 1, [(self.sugar, "6", "20")], "0", "0")
+        inv.delete_invoice(self.c, iid)
+        self.assertEqual(self.snap(), before)
+        self.assertEqual(self.bal(self.tea), 0)
+        self.assertEqual(self.rows(iid), [0, 0, 0, 0, 0])
+        self.assertEqual({r["id"]: r["balance_c"] for r in parties.list_parties(self.c, "supplier")}[sup2], 0)
+
+    def test_only_the_deleted_invoice_goes(self):
+        keep = self.make(paid="20")
+        gone = self.make(items=[(self.sugar, "3", "30")], paid="10")
+        inv.delete_invoice(self.c, gone)
+        self.assertEqual([r["id"] for r in inv.list_invoices(self.c, "purchase")], [keep])
+        self.assertEqual(self.bal(self.sugar), 20000)
+        self.assertEqual(self.sup_bal(), 10000 + 20000 - 2000)
+        self.assertEqual(tr.balance(self.c), -2000)
+
+    def test_numbering_reuses_last_number(self):
+        i1, i2, i3 = self.make(), self.make(), self.make()
+        inv.delete_invoice(self.c, i3)
+        self.assertEqual(inv.get_invoice(self.c, self.make())["invoice"]["number"], 3)   # الأخيرة رقمها بيتعاد
+        inv.delete_invoice(self.c, i1)
+        self.assertEqual([r["number"] for r in inv.list_invoices(self.c, "purchase")], [3, 2])
+        self.assertEqual(inv.get_invoice(self.c, self.make())["invoice"]["number"], 4)
+
+    def test_delete_blocked_when_goods_were_sold(self):
+        iid = self.make(paid="50")
+        inventory.record_sale(self.c, self.sugar, 1, "15")
+        before = (self.snap(), self.rows(iid))
+        with self.assertRaises(ValidationError) as cm:
+            inv.delete_invoice(self.c, iid)
+        self.assertIn("اتباع", str(cm.exception))
+        self.assertEqual((self.snap(), self.rows(iid)), before)          # مفيش حاجة اتمسحت
+        self.assertEqual(len(inv.list_invoices(self.c, "purchase")), 1)
+
+    def test_delete_return(self):
+        self.make()
+        before = self.snap()
+        rid = self.make(items=[(self.sugar, "5", "20")], kind="purchase_return", paid="30")
+        inv.delete_invoice(self.c, rid)
+        self.assertEqual(self.snap(), before)
+        self.assertEqual(inv.list_invoices(self.c, "purchase_return"), [])
+
+    def test_delete_blocked_by_closed_treasury_period(self):
+        iid = self.make(paid="50", date=day(3))
+        tr.close_day(self.c, day(2))
+        before = self.snap()
+        with self.assertRaises(ValidationError) as cm:
+            inv.delete_invoice(self.c, iid)
+        self.assertIn("مقفولة", str(cm.exception))
+        self.assertEqual(self.snap(), before)
+        self.assertEqual(len(inv.list_invoices(self.c, "purchase")), 1)
+
+    def test_purge_refuses_unbalanced_data(self):
+        iid = self.make(paid="50")                                       # فاتورة شغّالة: أثرها مش متعادل ومعاها سند خزينة
+        self.assertFalse(maintenance.purge_invoice(self.c, iid))
+        self.assertEqual(len(inv.list_invoices(self.c, "purchase")), 1)
+        inv.cancel_invoice(self.c, iid)
+        parties.add_ledger_entry(self.c, "supplier", self.sup, "adjust", 500, "invoice", iid, "عبث")
+        self.assertFalse(maintenance.purge_invoice(self.c, iid))         # قيد زيادة بيبوّظ التعادل
+        self.assertEqual(self.c.execute("SELECT COUNT(*) FROM invoices WHERE id=?", (iid,)).fetchone()[0], 1)
+
+
+class UpgradeV4Tests(unittest.TestCase):
+    def setUp(self):
+        self.path = tmp_db(); self.c = connect(self.path); init_db(self.c, self.path)
+        c = self.c
+        self.sup = parties.create(c, "supplier", "مورد", opening_balance="100")
+        self.sugar = products.create(c, "سكر", "10", "15", "0", "10")
+        self.keep = inv.create_invoice(c, "purchase", self.sup, 1, [(self.sugar, "5", "10")], "0", "20")
+        self.gone = inv.create_invoice(c, "purchase", self.sup, 1, [(self.sugar, "3", "10")], "0", "10")
+        inv.cancel_invoice(c, self.gone)           # زي الفواتير الملغية القديمة (اتلغت قبل النسخة 4)
+
+    def numbers(self):
+        c = self.c
+        return (inventory.balance(c, self.sugar), {r["id"]: r["balance_c"] for r in parties.list_parties(c, "supplier")}[self.sup],
+                tr.balance(c))
+
+    def test_old_cancelled_invoices_are_purged(self):
+        before = self.numbers()
+        self.c.execute("PRAGMA user_version = 3")                      # كأن القاعدة لسه على النسخة 3
+        self.assertIsNone(init_db(self.c, self.path))
+        self.assertEqual(self.c.execute("PRAGMA user_version").fetchone()[0], 4)
+        backups = os.listdir(os.path.join(os.path.dirname(self.path), "backups"))
+        self.assertTrue(any("before_v4" in b for b in backups))
+        q = lambda sql, *a: self.c.execute(sql, a).fetchone()[0]
+        self.assertEqual(q("SELECT COUNT(*) FROM invoices WHERE id=?", self.gone), 0)
+        self.assertEqual(q("SELECT COUNT(*) FROM invoices WHERE id=?", self.keep), 1)
+        self.assertEqual(q("SELECT COUNT(*) FROM stock_movements WHERE ref_type='invoice' AND ref_id=?", self.gone), 0)
+        self.assertEqual(q("SELECT COUNT(*) FROM party_ledger WHERE ref_type='invoice' AND ref_id=?", self.gone), 0)
+        self.assertEqual(q("SELECT COUNT(*) FROM treasury_entries WHERE ref_type='invoice' AND ref_id=?", self.gone), 0)
+        self.assertEqual(self.numbers(), before)                        # الأرصدة زي ما هي بالظبط
+
+    def test_unbalanced_cancelled_invoice_is_kept_hidden(self):
+        self.c.execute("UPDATE invoices SET status='cancelled' WHERE id=?", (self.keep,))   # علامة «ملغية» من غير ما أثرها يتعكس
+        before = self.numbers()
+        self.c.execute("PRAGMA user_version = 3")
+        init_db(self.c, self.path)
+        self.assertEqual(self.c.execute("SELECT COUNT(*) FROM invoices WHERE id=?", (self.keep,)).fetchone()[0], 1)
+        self.assertEqual(self.numbers(), before)                        # مبنخرّبش أرقام عشان نخفي حاجة
+        self.assertEqual(inv.list_invoices(self.c, "purchase"), [])     # بس متظهرش في القائمة
 
 
 class PreviewTests(unittest.TestCase):

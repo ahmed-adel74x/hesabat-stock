@@ -1,4 +1,4 @@
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # كل جملة لوحدها (executescript بيعمل COMMIT ضمني فمنستخدمهوش جوه transaction)
 V1_STATEMENTS = [
@@ -158,4 +158,7 @@ V3_STATEMENTS = [
 ]
 
 # رقم النسخة الجديدة -> جمل إنشائها. الترقية بتمشي خطوة خطوة.
-UPGRADE_STEPS = {2: V2_STATEMENTS, 3: V3_STATEMENTS}
+# النسخة 4: مسح الفواتير الملغية القديمة (مبقاش فيه فاتورة بتفضل ظاهرة كـ«ملغية»). الخطوة ممكن تكون جملة SQL أو دالة.
+from .maintenance import purge_cancelled_invoices  # noqa: E402
+
+UPGRADE_STEPS = {2: V2_STATEMENTS, 3: V3_STATEMENTS, 4: [purge_cancelled_invoices]}

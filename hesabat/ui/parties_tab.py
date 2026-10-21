@@ -3,12 +3,14 @@ from PySide6.QtWidgets import QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEd
 from ..logic import parties
 from ..logic.errors import ValidationError
 from ..logic.money import fmt_money, plain_money
-from .common import button, card, cell, confirm, field_label, guard, make_table, selected_id
+from .common import button, card, cell, confirm, field_label, guard, make_table, safe_call, selected_id
+from .invoices_tab import InvoiceViewDialog
 
 
 class StatementDialog(QDialog):
-    def __init__(self, parent, data):
+    def __init__(self, parent, conn, data):
         super().__init__(parent)
+        self.conn, self.invoice_ids = conn, data["invoice_ids"]
         self.setWindowTitle(f"كشف حساب - {data['party']['name']}")
         self.resize(760, 480)
         v = QVBoxLayout(self)
@@ -19,11 +21,20 @@ class StatementDialog(QDialog):
             date, kind, note, amount, running = row
             for c, val in enumerate((date, kind, note, fmt_money(amount), fmt_money(running))):
                 t.setItem(r, c, cell(val))
+        t.cellClicked.connect(self.open_invoice)
         v.addWidget(t, 1)
+        hint = QLabel("اضغط على أي فاتورة عشان تشوف تفاصيلها كاملة")
+        hint.setStyleSheet("color:#64748b")
+        v.addWidget(hint)
         total = QLabel(f"الرصيد الحالي: {fmt_money(data['balance_c'])}")
-        total.setStyleSheet("font-size:17px;font-weight:bold;color:#0f172a")
+        total.setStyleSheet("font-size:17px;font-weight:bold")
         v.addWidget(total)
         v.addWidget(button("إغلاق", "primary", self.accept))
+
+    def open_invoice(self, row, _col=0):
+        iid = self.invoice_ids[row] if 0 <= row < len(self.invoice_ids) else None
+        if iid is not None:
+            safe_call(self, lambda: InvoiceViewDialog(self, self.conn, iid).exec())
 
 
 class PartiesTab(QWidget):
@@ -127,4 +138,4 @@ class PartiesTab(QWidget):
 
     @guard
     def statement(self):
-        StatementDialog(self, parties.statement(self.conn, self.kind, self._need())).exec()
+        StatementDialog(self, self.conn, parties.statement(self.conn, self.kind, self._need())).exec()

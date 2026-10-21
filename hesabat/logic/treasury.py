@@ -142,17 +142,19 @@ def void_linked(conn, ref_type, ref_id):
 
 
 def void_entry(conn, entry_id):
+    """بيلغي السند ويمسحه خالص: بيتشال من الخزينة ومن كشف حساب الطرف (مبيفضلش له أثر ولا سطر "ملغي")."""
     with tx(conn):
         e = conn.execute("SELECT * FROM treasury_entries WHERE id=?", (entry_id,)).fetchone()
-        if not e:
+        if not e or e["voided"]:
             raise ValidationError("السند غير موجود")
-        if e["voided"]:
-            raise ValidationError("السند ملغي بالفعل")
         if e["ref_type"] == "invoice":
             raise ValidationError("السند ده مرتبط بفاتورة. عدّل الفاتورة نفسها بدل ما تلغيه.")
         if e["ref_type"] == "closing":
             raise ValidationError("ده سند تسوية تقفيل. بيتلغي بإلغاء التقفيل.")
-        _void(conn, e)
+        _check_open(conn, e["entry_date"])
+        # مسح قيد السند من حساب الطرف = نفس أثر العكس، من غير ما يفضل سطر إلغاء في الكشف
+        conn.execute("DELETE FROM party_ledger WHERE ref_type IN ('treasury','treasury_void') AND ref_id=?", (entry_id,))
+        conn.execute("DELETE FROM treasury_entries WHERE id=?", (entry_id,))
 
 
 def recent_entries(conn, limit=100):
@@ -162,6 +164,7 @@ def recent_entries(conn, limit=100):
         FROM treasury_entries e
         LEFT JOIN customers c ON e.party_type='customer' AND c.id=e.party_id
         LEFT JOIN suppliers s ON e.party_type='supplier' AND s.id=e.party_id
+        WHERE e.voided=0
         ORDER BY e.entry_date DESC, e.id DESC LIMIT ?""", (limit,)).fetchall()
 
 

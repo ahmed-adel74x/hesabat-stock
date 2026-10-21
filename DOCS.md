@@ -25,14 +25,21 @@
 
 ## 3. هيكل المشروع
 ```
-main.py                     نقطة التشغيل
+main.py                     نقطة التشغيل (بيسجّل أي خطأ في error.log)
 requirements.txt            PySide6 + openpyxl
+build_windows.bat           بناء الـ exe على جهاز ويندوز
+CUSTOMER_GUIDE_AR.md        دليل تشغيل للعميل (بالعربي)
+.github/workflows/build-windows.yml   بناء الـ exe على GitHub (من لينكس)
 hesabat/
-  app.py                    تشغيل التطبيق: ستايل، RTL، ترحيل القاعدة، النافذة، التقاط الأخطاء
+  app.py                    تشغيل التطبيق: ستايل، RTL، أيقونة، ترحيل القاعدة، النافذة، التقاط الأخطاء
+  applog.py                 سجل الأخطاء (error.log)
+  selftest.py               اختبار ذاتي للـ exe (--selftest)
+  assets/                   icon.png و icon.ico
   db/
     connection.py           connect()، tx()، backup_db()، مسارات البيانات
-    schema.py               الجداول لكل نسخة (V1/V2/V3) + UPGRADE_STEPS
+    schema.py               الجداول لكل نسخة (V1/V2/V3) + UPGRADE_STEPS (الخطوة جملة SQL أو دالة)
     migrations.py           init_db(): إنشاء/ترحيل/ترقية القاعدة (نسخة احتياطية + تقرير مطابقة)
+    maintenance.py          purge_invoice: مسح فاتورة وكل أثرها بأمان (بيتأكد إن الأثر متعادل)
   logic/                    كل منطق العمل. مفيش PySide6 هنا ولا في db/
     errors.py  money.py  search.py  products.py  warehouses.py  parties.py
     inventory.py  invoices.py  treasury.py  reports.py  export.py
@@ -42,6 +49,8 @@ hesabat/
     invoices_tab.py  treasury_tab.py  reports_tab.py
 tests/                      اختبارات unittest (تشغّل بـ pytest كمان)
 tools/test_migration.py     تجربة الترحيل على نسخة من بياناتك
+tools/build_exe.py          أمر بناء الـ exe (PyInstaller)
+tools/make_icon.py          بيرسم الأيقونة
 ```
 
 ## 4. القواعد الأساسية (اقرأها قبل أي تعديل)
@@ -78,6 +87,7 @@ with tx(conn):          # commit لو تمام، rollback عند أي خطأ
 | 1 | `warehouses`, `products`, `suppliers`, `customers`, `stock_movements`, `party_ledger`, `stock_transfers`, `stocktakes`, `stocktake_items` |
 | 2 | `app_settings`, `treasury_entries`, `treasury_closings` |
 | 3 | `invoices`, `invoice_items` |
+| 4 | مفيش جداول جديدة. خطوة بيثون بتمسح الفواتير الملغية القديمة (`maintenance.purge_cancelled_invoices`) |
 
 القاعدة القديمة (جدولين `products` و`moves`) بتتحول للنسخة 1 تلقائياً، وجداولها بتفضل جوه الملف باسم `legacy_products` و`legacy_moves`. تقدر تمسحهم يدوياً بعد ما تتأكد.
 
@@ -112,12 +122,12 @@ python3 tools/test_migration.py ~/HesabatStock/stock.db
 | الملف | أهم الدوال |
 |---|---|
 | `money.py` | `parse_money`, `parse_qty`, `fmt_money`, `fmt_qty`, `plain_*`, `mul_qty_price`, `to_cents`, `to_milli` |
-| `products.py` | `list_products(conn, query)` (بحث بالاسم أو الرقم)، `count`, `get`, `create`, `update`, `deactivate` |
+| `products.py` | `list_products(conn, query)` (بحث بالاسم أو الرقم)، `count`, `get`, `create`, `update(..., qty, warehouse_id)` (كمية اختيارية بتتسوّى بحركة `adjust`)، `deactivate` |
 | `search.py` | `normalize`, `matches`, `first_match`: بحث بيتجاهل التشكيل والفروق الشائعة في العربي (أ/ا/إ، ة/ه، ى/ي) والأرقام العربية، وكل كلمة في البحث لازم تتوافر (الترتيب مش مهم) |
 | `warehouses.py` | `list_warehouses`, `main_id`, `create`, `update`, `deactivate` |
 | `parties.py` | `list_parties`, `get`, `create`, `update`, `deactivate`, `statement`, `add_ledger_entry`, `default_customer_id` (الأنواع `customer` و`supplier`) |
-| `inventory.py` | `balance`, `stock_table`, `add_movement`, `require_available`, `apply_purchase`, `new_average_cost`, `transfer`, `apply_stocktake` (`record_purchase`/`record_sale` موجودين بس الواجهة مبتستخدمهمش) |
-| `invoices.py` | `preview`, `create_invoice`, `update_invoice`, `cancel_invoice`, `get_invoice`, `list_invoices`, `default_price`, `invoice_html` |
+| `inventory.py` | `balance`, `stock_table`, `add_movement`, `require_available`, `apply_purchase`, `new_average_cost`, `transfer`, `apply_stocktake`, `set_quantity` (تعديل كمية صنف في مخزن بحركة `adjust` بالفرق)، (`record_purchase`/`record_sale` موجودين بس الواجهة مبتستخدمهمش) |
+| `invoices.py` | `preview`, `create_invoice`, `update_invoice`, `delete_invoice` (مسح نهائي)، `cancel_invoice` (جزء داخلي من المسح)، `get_invoice`, `list_invoices`, `default_price`, `invoice_html` |
 | `treasury.py` | `add_entry`, `add_voucher`, `void_entry`, `void_linked`, `balance`, `summary`, `statement`, `set_opening`, `close_day`, `reopen_last_closing`, `list_closings` |
 | `reports.py` | `dashboard`, 9 تقارير، `REPORTS`, `build_report`, `run_report`, `format_cell` |
 | `export.py` | `to_excel`, `report_html`, `default_filename` |
@@ -136,7 +146,7 @@ python3 tools/test_migration.py ~/HesabatStock/stock.db
 
 **الحفظ** (كله في transaction): فحص الطرف والمخزن ← رقم متسلسل ← الفاتورة وبنودها ← حركات المخزون ← قيد حساب الطرف ← سند الخزينة بالمدفوع (وده بيسجّل دفعة الطرف في حسابه أوتوماتيك، فالفاتورة متسجلهاش مرتين).
 **التعديل** (`update_invoice`): بيلقط الأثر الحالي من الحركات ← يلغي سندات الخزينة القديمة ← يعكس القيد القديم ← يستبدل البنود ← يطبّق الجديد ويعكس القديم من المخزون ← قيد وسند جداد. ترتيب المخزون: اللي بيزوّد المخزون (شراء، مرتجع بيع) بيدخل الجديد الأول، واللي بينقصه (بيع، مرتجع شراء) بيرجّع القديم الأول، عشان ميظهرش خطأ «كمية غير متاحة» غلط.
-**الإلغاء**: نفس العكس، وبعدها `status='cancelled'`. حركات العكس بتتسجل بتاريخ الفاتورة الأصلي عشان تقارير الفترات تتعادل. السجل القديم بيفضل ظاهر في كشف الحساب.
+**الحذف** (`delete_invoice`، وده اللي زر «حذف الفاتورة» بيناديه): بيعكس أثر الفاتورة (`cancel_invoice`: حركات عكسية بتاريخ الفاتورة الأصلي، قيد عكسي، إلغاء سندات الخزينة)، وبعدين `maintenance.purge_invoice` بيمسحها نهائياً هي وبنودها وحركات المخزون وقيود الحساب وسندات الخزينة المرتبطة بيها. فبتختفي من القوائم والتقارير وكشوف الحساب ومفيش رجوع. المسح بيتأكد قبلها إن صافي كل صنف/مخزن وكل طرف = صفر ومفيش سند خزينة شغّال، فمبيغيّرش أي رصيد؛ ولو مش متعادل مبيمسحش حاجة. الكل في transaction واحدة، فلو الإلغاء مينفعش (مثلاً الكمية اتباعت أو الفترة مقفولة) مبيتغيّرش حاجة. رقم آخر فاتورة بيتعاد استخدامه بعد حذفها (الترقيم `MAX+1`)، لكن حذف فاتورة من النص بيسيب فجوة.
 **قواعد:** البيع ومرتجع الشراء بيتمنعوا لو الكمية أكبر من المتاحة. العميل النقدي لازم يدفع/يستلم كامل المبلغ (مفيش رصيد على «عميل نقدي»). الفاتورة اللي سندها في فترة خزينة مقفولة مينفعش تتعدل أو تتلغي إلا بعد إلغاء التقفيل.
 
 ### 8.2 الخصم ومتوسط التكلفة
@@ -154,7 +164,8 @@ python3 tools/test_migration.py ~/HesabatStock/stock.db
 - **الإلغاء:** `void_entry` للسندات اليدوية (بتعكس أثرها على الطرف). سند الفاتورة بيتلغي بتعديل/إلغاء الفاتورة (`void_linked`)، وسند تسوية التقفيل بإلغاء التقفيل.
 - **التقفيل** (`close_day`): بيجمّد كل السندات بتاريخ التقفيل أو قبله. لو كتبت النقدية الفعلية واختلفت عن الدفتري بيتسجل سند «عجز/زيادة جرد الخزينة» تلقائي. `reopen_last_closing` بيلغي آخر تقفيل وسند تسويته. الرصيد الافتتاحي مينفعش يتغير بعد أول تقفيل.
 
-### 8.4 التحويل والجرد (`inventory.py`)
+### 8.4 التحويل والجرد وتعديل الكمية (`inventory.py`)
+- **تعديل الكمية يدوياً** (`set_quantity`، من شاشة الأصناف): الكمية مفيش لها عمود، فالتعديل بيتسجل حركة `adjust` بالفرق في المخزن المختار (`ref_type='manual'`) وبتظهر في «حركة صنف» باسم «تسوية». لو الكمية نفسها مفيش فرق مبتتسجلش حاجة. للجرد الرسمي بسجل (كمية دفترية/فعلية/فرق) استخدم «جرد وتسوية».
 - **التحويل:** حركتين (`transfer_out` و`transfer_in`) بنفس `ref_id` (جدول `stock_transfers`)، ومبينفذش لو أي صنف رصيده مش كفاية (الكل أو مفيش).
 - **الجرد:** بتدخّل الكمية الفعلية، والفرق بيتسجل حركة `adjust` + سجل في `stocktakes`/`stocktake_items`. الأصناف اللي مكتوبش ليها كمية مبتتلمسش.
 
@@ -162,7 +173,7 @@ python3 tools/test_migration.py ~/HesabatStock/stock.db
 | الملف | الكلاسات |
 |---|---|
 | `main_window.py` | `MainWindow` (11 تبويب، وكل تبويب بيحدّث نفسه لما تفتحه عن طريق `refresh()`) |
-| `products_tab.py` | `ProductsTab` (جدول بعمود «الرقم»، وخانة بحث بتفلتر وانت بتكتب مع عدّاد «عدد الأصناف: X من Y»، والصنف المحدد بيفضل محدد بعد البحث) |
+| `products_tab.py` | `ProductsTab` (جدول بعمود «الرقم»، وخانة بحث بتفلتر وانت بتكتب مع عدّاد «عدد الأصناف: X من Y»، والصنف المحدد بيفضل محدد بعد البحث. **الكمية قابلة للتعديل**: خانة «المخزن» بتحدد الكمية بتخص أنهي مخزن، وتغييرها بيسجّل «تسوية» بالفرق؛ لو متغيّرتش الكمية مبنلمسش المخزون، وعند الإضافة بتبقى الكمية الافتتاحية) |
 | `warehouses_tab.py` | `WarehousesTab` |
 | `stock_ops_tab.py` | `TransferPage`, `StocktakePage`, `StockOpsTab` |
 | `parties_tab.py` | `PartiesTab` (عملاء وموردين بنفس الكلاس)، `StatementDialog` |
@@ -170,7 +181,7 @@ python3 tools/test_migration.py ~/HesabatStock/stock.db
 | `treasury_tab.py` | `VouchersPage`, `StatementPage`, `ClosingPage`, `TreasuryTab` |
 | `reports_tab.py` | `DashboardPage` (الملخص)، `ReportsCenterPage` (التقارير)، `ReportsTab` |
 | `common.py` | `guard`, `safe_call`, `report_error`, `make_table`, `cell`, `fill_combo`, `confirm`, `stat_card`… |
-| `printing.py` | معاينة/طباعة الفاتورة والتقرير، وتصدير PDF |
+| `printing.py` | معاينة/طباعة الفاتورة والتقرير، وتصدير PDF، وفتح PDF في برنامج العرض كبديل مضمون (انظر «الطباعة» تحت) |
 | `search_combo.py` | `SearchCombo`: قائمة منسدلة قابلة للكتابة والبحث (الأصناف، العملاء، الموردين) في الفواتير والتحويل والسندات والتقارير |
 | `theme.py` | الستايل الأبيض الموحد (`STYLE`) |
 
@@ -181,6 +192,14 @@ python3 tools/test_migration.py ~/HesabatStock/stock.db
 - الجداول: `make_table` + `cell` (للتلوين)، ومعرّف الصف بيتخزن في `cell(..., data=id)` ويتقرأ بـ `selected_id`.
 - تقارير ثقيلة: `_Job` (QRunnable) بيفتح اتصال خاص بيه في thread تاني فالواجهة متتجمدش.
 - الطباعة: النص من `logic` (`invoice_html` / `report_html`) والعرض في `printing.py`.
+
+### الطباعة (`ui/printing.py`)
+كل الطباعة (فواتير وتقارير) بتعدّي هنا. النص بيجي من `invoices.invoice_html` و`export.report_html`، والرسم بـ `QTextDocument` على `QPrinter`.
+- **الأزرار:** «طباعة» (معاينة ثم طباعة)، و«عرض PDF» (بيفتح الملف في برنامج العرض الافتراضي ومنه تطبع بـ Ctrl+P، **بديل مضمون مبيعتمدش على نافذة المعاينة ولا على وجود طابعة**)، و«تصدير PDF» في التقارير (حفظ بمكان تختاره).
+- **قاعدة مهمة:** نافذة `QPrintPreviewDialog` بتستخدم الـ `QPrinter` طول ما هي مفتوحة، فالطابعة لازم تتخزن في متغير (`dlg._keep`). لو اتعملت جوه نداء الإنشاء مباشرة Python بيمسحها والنافذة بتشاور على حاجة اتمسحت (معاينة فاضية أو قفل البرنامج). ده كان سبب عطل الطباعة في الإصدار 1.0.0.
+- مقاس الصفحة (A4) والهوامش بنحددهم بأنفسنا، والجداول العريضة (أكتر من 5 أعمدة) بتتطبع بالعرض. إعدادات الطابعة الاختيارية لو فشلت بتتسجل ومبتوقّفش الطباعة.
+- لو المعاينة فشلت لأي سبب بيتفتح PDF تلقائي وتظهر رسالة، وأي خطأ بيتسجل في `error.log` (بما فيه أخطاء رسم الصفحة جوه المعاينة).
+- **تشخيص:** `python main.py --selftest-print نتيجة.txt` (أو `HesabatStock.exe --selftest-print نتيجة.txt`) بيكتب في الملف الطابعات اللي Qt شايفها والافتراضية، وهل إنشاء PDF اشتغل، وهل نافذة المعاينة فتحت ورسمت الصفحة فعلاً. معلوماتي ومبيفشّلش حاجة، وبيتشغّل تلقائي في الـ build كخطوة منفصلة (`continue-on-error`).
 
 ## 10. التقارير (`reports.py` + `export.py`)
 كل تقرير بيرجّع نفس الهيكل:
@@ -202,20 +221,21 @@ python3 tools/test_migration.py ~/HesabatStock/stock.db
 ## 11. الاختبارات
 ```
 cd tests
-python3 -m unittest test_core test_treasury test_invoices test_sales test_reports test_search smoke_ui_stub -v
+python3 -m unittest test_core test_treasury test_invoices test_sales test_reports test_search test_packaging smoke_ui_stub -v
 ```
-(أو `pytest tests`.) **69 اختبار**:
+(أو `pytest tests`.) **105 اختبار**:
 - `test_core`: الأرقام، الترحيل (بتفاصيل صعبة: رصيد سالب، كميات عشرية، حركات لصنف محذوف، rollback)، المخزون، العملاء والموردين، `tx`.
 - `test_treasury`: الترقية، السندات، الربط بالحسابات، التقفيل والقفل.
 - `test_invoices` و`test_sales`: الشراء والبيع والمرتجعات، الخصم، التعديل والإلغاء، منع البيع فوق المتاح، العميل النقدي، الربح، الطباعة (HTML).
 - `test_search`: تطبيع النص العربي ومطابقة البحث (بالاسم وبالرقم) و`first_match`، وثبات أرقام الأصناف.
+- `test_packaging`: مكان البيانات وسجل الأخطاء، سلامة ملفات الأيقونة، أمر البناء، وتناسق ملف الـ workflow مع الاختبارات الموجودة فعلاً.
 - `test_reports`: كل التقارير بأرقام محسوبة يدوياً، وتصدير Excel (بيتقرأ بعد الكتابة).
-- `smoke_ui_stub` (وبيغطي كمان منطق `SearchCombo`: الاختيار بالكتابة وبالرقم ورفض النص غير المطابق): بيستبدل PySide6 بنسخة وهمية ويشغّل كل الشاشات وأزرارها فوق قاعدة حقيقية. **بيكشف أخطاء التوصيل (أسماء/معاملات غلط) لكنه مبيختبرش الشكل ولا RTL ولا الطباعة الفعلية**، دول لازم تتشاف على البرنامج الحقيقي.
+- `smoke_ui_stub` (وبيغطي كمان منطق `SearchCombo`، والاختبار الذاتي `selftest` بنجاحه وفشله، ومنطق الطباعة `PrintingTests`: حماية الطابعة من المسح، تسجيل أخطاء الرسم، البديل لما المعاينة تفشل، وأمر `--selftest-print`): بيستبدل PySide6 بنسخة وهمية ويشغّل كل الشاشات وأزرارها فوق قاعدة حقيقية. **بيكشف أخطاء التوصيل (أسماء/معاملات غلط) لكنه مبيختبرش الشكل ولا RTL ولا الطباعة الفعلية**، دول لازم تتشاف على البرنامج الحقيقي.
 
 ## 12. تعديلات شائعة
 
 **إضافة عمود لجدول (مثلاً باركود للصنف):**
-1. في `db/schema.py` أضف `V4_STATEMENTS = ["ALTER TABLE products ADD COLUMN barcode TEXT NOT NULL DEFAULT ''"]`، وأضفها في `UPGRADE_STEPS[4]`، وغيّر `SCHEMA_VERSION = 4`. (الترقية بتاخد نسخة احتياطية لوحدها.)
+1. في `db/schema.py` أضف `V5_STATEMENTS = ["ALTER TABLE products ADD COLUMN barcode TEXT NOT NULL DEFAULT ''"]`، وأضفها في `UPGRADE_STEPS[5]`، وغيّر `SCHEMA_VERSION = 5`. (الترقية بتاخد نسخة احتياطية لوحدها.)
 2. عدّل `logic/products.py` (`create`/`update`) والواجهة `products_tab.py` (`FIELDS` و`HEADS` وترتيب `self.f`).
 3. حدّث الاختبارات اللي بتتحقق من رقم النسخة (`user_version`).
 
@@ -225,7 +245,7 @@ python3 -m unittest test_core test_treasury test_invoices test_sales test_report
 
 **تغيير الألوان/الخطوط:** `ui/theme.py`.
 
-**نقل مكان البيانات:** `data_dir()` في `db/connection.py`.
+**نقل مكان البيانات:** `data_dir()` في `db/connection.py`، أو من غير تعديل كود: متغير البيئة `HESABAT_DATA_DIR`.
 
 **نسخة احتياطية يدوية:** انسخ فولدر `~/HesabatStock` (فيه `stock.db` والنسخ الاحتياطية).
 
@@ -236,9 +256,49 @@ python3 -m unittest test_core test_treasury test_invoices test_sales test_report
 - مفيش مستخدمين أو صلاحيات.
 - مفيش نسخ احتياطي تلقائي دوري، النسخ بتتاخد بس قبل الترحيل والترقية.
 - أسماء الأصناف/الأطراف المحذوفة (الموقوفة) بتفضل محجوزة.
+- **حذف الفاتورة نهائي ومفيش سجل بيها بعد كده** (مفيش أثر في القاعدة ولا في الشاشات). لو محتاج سجل محذوفات (مين مسح إيه ومتى) ده محتاج إضافة منفصلة.
 - الواجهة اتختبرت بنسخة وهمية من Qt (نقطة 11)، والتشغيل الفعلي على جهاز المستخدم هو الاختبار النهائي.
 
 - **القوائم القابلة للبحث** (`SearchCombo`) معتمدة على `QCompleter` في Qt. منطق الاختيار والرفض متختبر، لكن ظهور قائمة الاقتراحات وشكلها لازم تتجرب على البرنامج الحقيقي.
 
 ## 14. أفكار للتطوير
 زر نسخ احتياطي واستعادة، مستخدمين وصلاحيات، باركود، سداد متبقي فاتورة بربطه بالفاتورة، خصم لكل سطر، سعر بيع حسب العميل، تنبيهات حد الطلب عند فتح البرنامج، لوجو واسم المحل على الفاتورة، تصدير كل البيانات.
+
+## 15. بناء ملف exe وتوزيعه (ويندوز)
+البرنامج بيتحوّل لملف واحد `HesabatStock.exe` (PyInstaller، `--onefile --windowed`، بأيقونة، من غير نافذة سوداء) بيشتغل بدبل كليك من غير تثبيت Python. **الـ exe لازم يتبني على ويندوز** (مينفعش من لينكس)، وتغليف Qt مبيتجربش عندي هنا، فالـ build نفسه بيختبر الـ exe بعد بنائه.
+
+### الطريقة 1: من لينكس عن طريق GitHub Actions (مجاني)
+```
+cd ~/Downloads/stock_project
+git init -b main
+git add .
+git commit -m "نسخة 1.0.0"
+git remote add origin https://github.com/<حسابك>/<اسم-المستودع>.git     # مستودع Private جديد
+git push -u origin main
+```
+بعد الـ push الـ build بيبدأ لوحده (أو من تبويب **Actions** ← **Build Windows exe** ← **Run workflow**). لما يخلص (من 5 لـ 15 دقيقة) افتح الـ run ونزّل **HesabatStock-windows** من **Artifacts** (zip فيه الـ exe). لو أي مرحلة فشلت الـ artifact مش بيتعمل، وتشوف السبب في الـ log.
+
+الـ workflow بيعمل بالترتيب: تثبيت المكتبات ← **كل الاختبارات** ← بناء الـ exe ← **اختبار ذاتي للـ exe المبني** ← عرض حجمه وبصمته (SHA256) ← رفعه. فمفيش exe بيطلع لو الاختبارات أو الاختبار الذاتي فشلوا.
+`.gitignore` بيمنع رفع أي ملف `*.db` أو `backups/` أو `error.log` على GitHub بالغلط.
+
+### الطريقة 2: من جهاز ويندوز
+ثبّت Python (علّم «Add to PATH»)، وانسخ فولدر المشروع، ودوس دبل كليك على `build_windows.bat`. بيعمل نفس الخطوات ويطبع نتيجة الاختبار الذاتي، والناتج في `dist\HesabatStock.exe`.
+
+### الاختبار الذاتي `--selftest`
+```
+HesabatStock.exe --selftest نتيجة.txt        (أو على لينكس:  python main.py --selftest نتيجة.txt)
+```
+(فحص الطباعة منفصل: `--selftest-print`، انظر قسم الطباعة.) بيعمل قاعدة بيانات مؤقتة (بياناتك مبتتلمسش)، ويبني كل الشاشات الـ 11 ويحدّثها، ويشغّل التقارير التسعة بتصدير Excel وPDF حقيقي، ويكتب النتيجة في الملف (`SELFTEST OK` أو `SELFTEST FAILED` مع السبب) ويخرج بكود 0 أو 1. ده بيكشف أي مشكلة تغليف (مكتبة أو Qt plugin أو أيقونة ناقصة) قبل ما الـ exe يوصل للعميل. فيه مؤقّت (3 دقايق) بيقفل البرنامج لو حاجة علّقت.
+
+### تفاصيل التشغيل
+- **البيانات:** `C:\Users\<اسم المستخدم>\HesabatStock\` (قاعدة البيانات + `backups\` + `error.log`). الـ exe ممكن يتحط في أي مكان، والبيانات منفصلة عنه.
+- **الأخطاء:** لأن مفيش نافذة سوداء، أي خطأ بيظهر في نافذة بنصه وبيتسجل في `error.log`. اطلب الملف ده من العميل لو في مشكلة.
+- **التحديث عند العميل:** يستبدل الـ exe. قاعدة البيانات بتترقّى لوحدها بنسخة احتياطية قبلها.
+- **رقم الإصدار:** `hesabat/__init__.py` (`__version__`)، وبيظهر في عنوان النافذة. غيّره قبل كل نسخة جديدة.
+- **دليل العميل:** `CUSTOMER_GUIDE_AR.md` (تشغيل، نسخ احتياطي، تحديث، الأخطاء). ابعته مع الـ exe.
+
+### تحذيرات مهمة
+- **Windows SmartScreen / الـ antivirus:** الـ exe **غير موقّع رقمياً**، فأول تشغيل غالباً هتظهر رسالة «Windows protected your PC» (More info ← Run anyway)، وبعض برامج الحماية بتنبّه على أي exe من PyInstaller. ده شائع ومش معناه إن فيه فيروس. التوقيع الرقمي (شهادة مدفوعة) بيقلل الظاهرة لكن مش بيلغيها تماماً.
+- **الحجم والسرعة:** الـ exe هيبقى تقريباً من 60 لـ 120 ميجا (تقدير، الرقم الفعلي بيظهر في log الـ build)، وبيفتح أبطأ شوية من البرنامج العادي لأنه بيفك نفسه في فولدر مؤقت في كل تشغيل.
+- **الترخيص:** PySide6 (Qt) مرخّصة LGPL. لو هتبيع البرنامج، اقرأ شروطها (ذكر الترخيص وعدم منع المستخدم من استبدال المكتبة). أنا مش محامي، فراجع حد مختص لو في شك.
+- **الإصدارات:** المكتبات (PySide6 وopenpyxl وPyInstaller) بتتنزل بآخر إصدار وقت البناء، فلو إصدار جديد كسر حاجة الاختبارات والاختبار الذاتي هيظهروا ده في الـ build ومش هيطلع exe.

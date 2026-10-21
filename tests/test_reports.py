@@ -133,7 +133,7 @@ class MovementAndTreasuryTests(ReportBase):
             rp.run_report(self.path, "nope", {})
 
     def test_format_cell(self):
-        self.assertEqual(rp.format_cell("money", -150000), "-1,500.00")
+        self.assertEqual(rp.format_cell("money", -150000), "-1,500")
         self.assertEqual(rp.format_cell("qty", 2500), "2.5")
         self.assertEqual(rp.format_cell("money", None), "")
         self.assertEqual(rp.format_cell("text", "x"), "x")

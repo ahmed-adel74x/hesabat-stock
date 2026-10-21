@@ -14,6 +14,7 @@ import html
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
+from ..db import maintenance
 from ..db.connection import tx
 from . import inventory, parties, treasury
 from .errors import ValidationError
@@ -235,6 +236,15 @@ def cancel_invoice(conn, invoice_id):
         conn.execute("UPDATE invoices SET status='cancelled', updated_at=? WHERE id=?", (inventory.now_str(), invoice_id))
 
 
+def delete_invoice(conn, invoice_id):
+    """بيمسح الفاتورة نهائياً: الأول بيعكس أثرها (مخزون، حساب الطرف، خزينة)، وبعدين بيمسحها هي وكل حركاتها
+    فتختفي من القوائم والتقارير وكشوف الحساب. مفيش رجوع. لو مينفعش تتلغي (مثلاً الكمية اتباعت) مبيتمسحش حاجة."""
+    with tx(conn):
+        cancel_invoice(conn, invoice_id)
+        if not maintenance.purge_invoice(conn, invoice_id):
+            raise ValidationError("مقدرتش أمسح الفاتورة لأن أثرها المحاسبي مش متعادل. متمسحتش، وابعت الموضوع للمطور.")
+
+
 # ---------------------------------------------------------------- استعلامات للواجهة
 def get_invoice(conn, invoice_id):
     inv = conn.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,)).fetchone()
@@ -248,7 +258,7 @@ def get_invoice(conn, invoice_id):
 def list_invoices(conn, kind, limit=300):
     table = _TABLES[KINDS[kind]["party"]]
     return conn.execute(f"""SELECT i.*, p.name AS party_name, i.total_c - i.paid_c AS remaining_c
-                            FROM invoices i JOIN {table} p ON p.id=i.party_id WHERE i.kind=?
+                            FROM invoices i JOIN {table} p ON p.id=i.party_id WHERE i.kind=? AND i.status='active'
                             ORDER BY i.invoice_date DESC, i.number DESC LIMIT ?""", (kind, limit)).fetchall()
 
 

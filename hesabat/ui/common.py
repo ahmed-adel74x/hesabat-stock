@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QAbstractItemView, QDialog, QFrame, QHeaderView, QLabel, QMessageBox,
                                QPlainTextEdit, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout)
 
+from ..applog import log
 from ..logic.errors import ValidationError
 
 CENTER = Qt.AlignmentFlag.AlignCenter
@@ -15,6 +16,7 @@ ROLE = Qt.ItemDataRole.UserRole
 def report_error(parent, tb_text):
     """أي خطأ غير متوقع: يتطبع في الترمينال ويظهر في نافذة بنصه الكامل."""
     print(tb_text, file=sys.stderr)
+    log(tb_text)
     box = QMessageBox(parent)
     box.setIcon(QMessageBox.Icon.Critical)
     box.setWindowTitle("خطأ غير متوقع")
@@ -125,7 +127,7 @@ def show_text(parent, title, text):
     v = QVBoxLayout(d)
     box = QPlainTextEdit(text)
     box.setReadOnly(True)
-    box.setStyleSheet("border:1px solid #e2e8f0;border-radius:8px;padding:8px;")
+    box.setStyleSheet("border:1px solid #64748b;border-radius:8px;padding:8px;")
     v.addWidget(box)
     v.addWidget(button("تمام", "primary", d.accept))
     d.exec()

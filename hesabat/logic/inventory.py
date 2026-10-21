@@ -139,3 +139,15 @@ def apply_stocktake(conn, warehouse_id, counts, note=""):
                 add_movement(conn, pid, wh["id"], "adjust", diff, 0, prod["avg_cost_c"], "stocktake", sid, "تسوية جرد")
                 changed += 1
         return sid, changed
+
+
+def set_quantity(conn, product_id, warehouse_id, qty, note="تعديل الكمية يدوياً"):
+    """بتخلّي كمية الصنف في المخزن = qty. الفرق بيتسجل حركة «تسوية» (adjust)، فالرصيد يفضل مصدره الحركات
+    والتقارير وحركة الصنف تفضل سليمة. بترجع الفرق (بالألف)، ولو مفيش فرق مبتسجلش حاجة."""
+    q = parse_qty(qty, "الكمية", allow_zero=True)
+    with tx(conn):
+        prod, wh = get_product(conn, product_id), get_warehouse(conn, warehouse_id)
+        diff = q - balance(conn, product_id, wh["id"])
+        if diff:
+            add_movement(conn, product_id, wh["id"], "adjust", diff, 0, prod["avg_cost_c"], "manual", None, note)
+        return diff

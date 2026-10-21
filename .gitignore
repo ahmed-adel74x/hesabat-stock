@@ -1,0 +1,13 @@
+# بيانات حقيقية: متترفعش على GitHub أبداً
+*.db
+backups/
+error.log*
+# ملفات البناء والبيئة
+venv/
+.buildenv/
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+.pytest_cache/
